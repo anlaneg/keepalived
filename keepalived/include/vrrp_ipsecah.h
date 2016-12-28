@@ -4,14 +4,14 @@
  *              a loadbalanced server pool using multi-layer checks.
  *
  * Part:        vrrp_ipsecah.c include file.
- * 
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
- *              
+ *
  *              This program is distributed in the hope that it will be useful,
  *              but WITHOUT ANY WARRANTY; without even the implied warranty of
  *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  *              See the GNU General Public License for more details.
- *              
+ *
  *              This program is free software; you can redistribute it and/or
  *              modify it under the terms of the GNU General Public License
  *              as published by the Free Software Foundation; either version
@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <string.h>
 #include <stdint.h>
+#include <openssl/md5.h>
 
 /* Predefined values */
 #define HMAC_MD5_TRUNC 0x0C	/* MD5 digest truncate value : 96-bit
@@ -50,6 +51,7 @@ typedef struct _ipsec_ah {				/* rfc2402.2 */
 
 typedef struct {		/* rfc2402.3.3.3.1.1.1 */
 	uint8_t			tos;
+	uint8_t			ttl;
 	uint16_t		frag_off;
 	uint16_t		check;
 } ICV_mutable_fields;		/* We need to zero this fields to compute the ICV */
@@ -59,6 +61,6 @@ typedef struct _seq_counter {
 	uint32_t		seq_number;
 } seq_counter_t;
 
-extern void hmac_md5(unsigned char *, int, unsigned char *, int, unsigned char *);
+extern void hmac_md5(unsigned char *, size_t, unsigned char *, size_t, unsigned char *);
 
 #endif

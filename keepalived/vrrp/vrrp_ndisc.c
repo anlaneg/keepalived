@@ -20,6 +20,8 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 /* system includes */
 #include <unistd.h>
 #include <net/ethernet.h>
@@ -30,43 +32,59 @@
 #include "memory.h"
 #include "utils.h"
 #include "vrrp_ipaddress.h"
+#include "vrrp_if_config.h"
+#include "vrrp_scheduler.h"
 #include "vrrp_ndisc.h"
+#if !HAVE_DECL_SOCK_CLOEXEC
+#include "old_socket.h"
+#endif
+#include "bitops.h"
 
-/* global vars */
-char *ndisc_buffer;
-int ndisc_fd;
+/* static vars */
+static char *ndisc_buffer;
+static int ndisc_fd;
 
 /*
  *	Neighbour Advertisement sending routine.
  */
-static int
+static void
 ndisc_send_na(ip_address_t *ipaddress)
 {
 	struct sockaddr_ll sll;
-	int len;
+	ssize_t len;
+	char addr_str[INET6_ADDRSTRLEN] = "";
 
 	/* Build the dst device */
 	memset(&sll, 0, sizeof (sll));
 	sll.sll_family = AF_PACKET;
 	memcpy(sll.sll_addr, IF_HWADDR(ipaddress->ifp), ETH_ALEN);
 	sll.sll_halen = ETHERNET_HW_LEN;
-	sll.sll_ifindex = IF_INDEX(ipaddress->ifp);
+	sll.sll_ifindex = (int)IF_INDEX(ipaddress->ifp);
+
+	if (__test_bit(LOG_DETAIL_BIT, &debug)) {
+		inet_ntop(AF_INET6, &ipaddress->u.sin6_addr, addr_str, sizeof(addr_str));
+		log_message(LOG_INFO, "Sending unsolicited Neighbour Advert on %s for %s",
+			    IF_NAME(ipaddress->ifp), addr_str);
+	
+	}
 
 	/* Send packet */
 	len = sendto(ndisc_fd, ndisc_buffer,
 		     ETHER_HDR_LEN + sizeof(struct ip6hdr) + sizeof(struct ndhdr) +
 		     sizeof(struct nd_opt_hdr) + ETH_ALEN, 0,
 		     (struct sockaddr *) &sll, sizeof (sll));
-	if (len < 0)
-		log_message(LOG_INFO, "VRRP: Error sending ndisc unsolicited neighbour advert on %s",
-			    IF_NAME(ipaddress->ifp));
-	return len;
+	if (len < 0) {
+		if (!addr_str[0])
+			inet_ntop(AF_INET6, &ipaddress->u.sin6_addr, addr_str, sizeof(addr_str));
+		log_message(LOG_INFO, "VRRP: Error sending ndisc unsolicited neighbour advert on %s for %s",
+			    IF_NAME(ipaddress->ifp), addr_str);
+	}
 }
 
 /*
  *	ICMPv6 Checksuming.
  */
-static uint32_t
+static __sum16
 ndisc_icmp6_cksum(const struct ip6hdr *ip6, const struct icmp6hdr *icp, uint32_t len)
 {
 	size_t i;
@@ -85,8 +103,8 @@ ndisc_icmp6_cksum(const struct ip6hdr *ip6, const struct icmp6hdr *icp, uint32_t
 
 	/* pseudo-header */
 	memset(&phu, 0, sizeof(phu));
-	phu.ph.ph_src = ip6->saddr;
-	phu.ph.ph_dst = ip6->daddr;
+	memcpy(&phu.ph.ph_src, &ip6->saddr, sizeof(struct in6_addr));
+	memcpy(&phu.ph.ph_dst, &ip6->daddr, sizeof(struct in6_addr));
 	phu.ph.ph_len = htonl(len);
 	phu.ph.ph_nxt = IPPROTO_ICMPV6;
 
@@ -96,7 +114,7 @@ ndisc_icmp6_cksum(const struct ip6hdr *ip6, const struct icmp6hdr *icp, uint32_t
 
 	sp = (const uint16_t *)icp;
 
-	for (i = 0; i < (len & ~1); i += 2)
+	for (i = 1; i < len; i += 2)
 		sum += *sp++;
 
 	if (len & 1)
@@ -104,9 +122,8 @@ ndisc_icmp6_cksum(const struct ip6hdr *ip6, const struct icmp6hdr *icp, uint32_t
 
 	while (sum > 0xffff)
 		sum = (sum & 0xffff) + (sum >> 16);
-	sum = ~sum & 0xffff;
 
-	return (sum);
+	return ~sum & 0xffff;
 }
 
 /*
@@ -115,8 +132,8 @@ ndisc_icmp6_cksum(const struct ip6hdr *ip6, const struct icmp6hdr *icp, uint32_t
  *	Neighbor Advertisements in order to (unreliably) propagate
  *	new information quickly.
  */
-int
-ndisc_send_unsolicited_na(ip_address_t *ipaddress)
+void
+ndisc_send_unsolicited_na_immediate(interface_t *ifp, ip_address_t *ipaddress)
 {
 	struct ether_header *eth = (struct ether_header *) ndisc_buffer;
 	struct ip6hdr *ip6h = (struct ip6hdr *) ((char *)eth + ETHER_HDR_LEN);
@@ -125,7 +142,6 @@ ndisc_send_unsolicited_na(ip_address_t *ipaddress)
 	struct nd_opt_hdr *nd_opt_h = (struct nd_opt_hdr *) ((char *)ndh + sizeof(struct ndhdr));
 	char *nd_opt_lladdr = (char *) ((char *)nd_opt_h + sizeof(struct nd_opt_hdr));
 	char *lladdr = (char *) IF_HWADDR(ipaddress->ifp);
-	int len;
 
 	/* Ethernet header:
 	 * Destination ethernet address MUST use specific address Mapping
@@ -142,12 +158,13 @@ ndisc_send_unsolicited_na(ip_address_t *ipaddress)
 	ip6h->payload_len = htons(sizeof(struct ndhdr) + sizeof(struct nd_opt_hdr) + ETH_ALEN);
 	ip6h->nexthdr = NEXTHDR_ICMP;
 	ip6h->hop_limit = NDISC_HOPLIMIT;
-	ip6h->saddr = ipaddress->u.sin6_addr;
+	memcpy(&ip6h->saddr, &ipaddress->u.sin6_addr, sizeof(struct in6_addr));
 	ip6h->daddr.s6_addr16[0] = htons(0xff02);
 	ip6h->daddr.s6_addr16[7] = htons(1);
 
 	/* ICMPv6 Header */
 	icmp6h->icmp6_type = NDISC_NEIGHBOUR_ADVERTISEMENT;
+	icmp6h->icmp6_router = ifp->gna_router;
 
 	/* Override flag is set to indicate that the advertisement
 	 * should override an existing cache entry and update the
@@ -166,15 +183,53 @@ ndisc_send_unsolicited_na(ip_address_t *ipaddress)
 						sizeof(struct ndhdr) + sizeof(struct nd_opt_hdr) + ETH_ALEN);
 
 	/* Send the neighbor advertisement message */
-	len = ndisc_send_na(ipaddress);
+	ndisc_send_na(ipaddress);
 
 	/* Cleanup room for next round */
 	memset(ndisc_buffer, 0, ETHER_HDR_LEN + sizeof(struct ip6hdr) +
 	       sizeof(struct ndhdr) + sizeof(struct nd_opt_hdr) + ETH_ALEN);
 
-	return len;
+	/* If we have to delay between sending NAs, note the next time we can */
+	if (ifp->garp_delay && ifp->garp_delay->have_gna_interval)
+		ifp->garp_delay->gna_next_time = timer_add_now(ifp->garp_delay->gna_interval);
 }
 
+static void
+queue_ndisc(vrrp_t *vrrp, interface_t *ifp, ip_address_t *ipaddress)
+{
+	timeval_t next_time = timer_add_now(ifp->garp_delay->gna_interval);
+
+	vrrp->gna_pending = true;
+	ipaddress->garp_gna_pending = true;
+
+	/* Do we need to schedule/reschedule the garp thread? */
+	if (!garp_thread || timer_cmp(next_time, garp_next_time) < 0) {
+		if (garp_thread)
+			thread_cancel(garp_thread);
+
+		garp_next_time = next_time;
+
+		garp_thread = thread_add_timer(master, vrrp_arp_thread, NULL, timer_long(ifp->garp_delay->gna_interval));
+	}
+}
+
+void
+ndisc_send_unsolicited_na(vrrp_t *vrrp, ip_address_t *ipaddress)
+{
+	interface_t *ifp = IF_BASE_IFP(ipaddress->ifp);
+
+	set_time_now();
+
+	/* Do we need to delay sending the ndisc? */
+	if (ifp->garp_delay && ifp->garp_delay->have_gna_interval && ifp->garp_delay->gna_next_time.tv_sec) {
+		if (timer_cmp(time_now, ifp->garp_delay->gna_next_time) < 0) {
+			queue_ndisc(vrrp, ifp, ipaddress);
+			return;
+		}
+	}
+
+	ndisc_send_unsolicited_na_immediate(ifp, ipaddress);
+}
 
 /*
  *	Neighbour Discovery init/close
@@ -187,7 +242,10 @@ ndisc_init(void)
 				       sizeof(struct ndhdr) + sizeof(struct nd_opt_hdr) + ETH_ALEN);
 
 	/* Create the socket descriptor */
-	ndisc_fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IPV6));
+	ndisc_fd = socket(PF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_IPV6));
+#if !HAVE_DECL_SOCK_CLOEXEC
+	set_sock_flags(ndisc_fd, F_SETFD, FD_CLOEXEC);
+#endif
 }
 
 void

@@ -1,10 +1,10 @@
-/* 
+/*
  * Soft:        Keepalived is a failover program for the LVS project
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
- * 
+ *
  * Part:        list.c include file.
- *  
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
  *
  *              This program is distributed in the hope that it will be useful,
@@ -22,6 +22,8 @@
 
 #ifndef _LIST_H
 #define _LIST_H
+
+#include <stddef.h>
 
 /* list definition */
 typedef struct _element *element;
@@ -47,19 +49,19 @@ struct _list {
 #define LIST_HEAD(L)		((L)->head)
 #define LIST_TAIL_DATA(L)	((L)->tail->data)
 #define LIST_ISEMPTY(L)		((L) == NULL || ((L)->head == NULL && (L)->tail == NULL))
+#define LIST_EXISTS(L)		((L) != NULL)
 #define LIST_SIZE(V)		((V)->count)
 
 /* Prototypes */
 extern list alloc_list(void (*free_func) (void *), void (*dump_func) (void *));
-extern void free_list(list l);
+extern void free_list(list *);
 extern void free_list_elements(list l);
 extern void free_list_element(list l, element e);
-extern void *list_element(list l, int num);
+extern void *list_element(list l, unsigned num);
 extern void dump_list(list l);
 extern void list_add(list l, void *data);
 extern void list_del(list l, void *data);
-extern list alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), int size);
-extern void dump_mlist(list l, int size);
+extern list alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), size_t size);
 extern void free_mlist(list l, int size);
 
 #endif

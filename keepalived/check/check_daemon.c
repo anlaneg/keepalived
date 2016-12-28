@@ -20,6 +20,11 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
+#include <string.h>
+#include <sys/prctl.h>
+
 #include "check_daemon.h"
 #include "check_parser.h"
 #include "ipwrapper.h"
@@ -28,38 +33,42 @@
 #include "check_ssl.h"
 #include "check_api.h"
 #include "global_data.h"
-#include "ipwrapper.h"
-#include "ipvswrapper.h"
 #include "pidfile.h"
 #include "daemon.h"
 #include "signals.h"
+#include "notify.h"
+#include "process.h"
 #include "logger.h"
 #include "list.h"
 #include "main.h"
 #include "memory.h"
 #include "parser.h"
+#include "bitops.h"
 #include "vrrp_netlink.h"
 #include "vrrp_if.h"
-#ifdef _WITH_SNMP_
+#ifdef _WITH_SNMP_CHECKER_
   #include "check_snmp.h"
 #endif
 
-extern char *checkers_pidfile;
+static char *check_syslog_ident;
 
 /* Daemon stop sequence */
 static void
-stop_check(void)
+stop_check(int status)
 {
+	/* Terminate all script process */
+	script_killall(master, SIGTERM);
+
 	/* Destroy master thread */
 	signal_handler_destroy();
 	thread_destroy_master(master);
 	free_checkers_queue();
 	free_ssl();
-	if (!(debug & 16))
+	if (!__test_bit(DONT_RELEASE_IPVS_BIT, &debug))
 		clear_services();
 	ipvs_stop();
-#ifdef _WITH_SNMP_
-	if (snmp)
+#ifdef _WITH_SNMP_CHECKER_
+	if (global_data->enable_snmp_checker)
 		check_snmp_agent_close();
 #endif
 
@@ -72,17 +81,24 @@ stop_check(void)
 #ifdef _WITH_VRRP_
 	free_interface_queue();
 #endif
-
-#ifdef _DEBUG_
-	keepalived_free_final("Healthcheck child process");
-#endif
+	free_parent_mallocs_exit();
 
 	/*
 	 * Reached when terminate signal catched.
 	 * finally return to parent process.
 	 */
+	log_message(LOG_INFO, "Stopped");
+
 	closelog();
-	exit(0);
+
+#ifndef _MEM_CHECK_LOG_
+	FREE_PTR(check_syslog_ident);
+#else
+	if (check_syslog_ident)
+		free(check_syslog_ident);
+#endif
+
+	exit(status);
 }
 
 /* Daemon init sequence */
@@ -90,47 +106,73 @@ static void
 start_check(void)
 {
 	/* Initialize sub-system */
-	ipvs_start();
+	if (ipvs_start() != IPVS_SUCCESS) {
+		stop_check(KEEPALIVED_EXIT_FATAL);
+		return;
+	}
+
 	init_checkers_queue();
 #ifdef _WITH_VRRP_
 	init_interface_queue();
 	kernel_netlink_init();
 #endif
-#ifdef _WITH_SNMP_
-	if (!reload && snmp)
-		check_snmp_agent_init();
-#endif
 
 	/* Parse configuration file */
 	global_data = alloc_global_data();
 	check_data = alloc_check_data();
+	if (!check_data)
+		stop_check(KEEPALIVED_EXIT_FATAL);
+
 	init_data(conf_file, check_init_keywords);
-	if (!check_data) {
-		stop_check();
-		return;
-	}
+
+	init_global_data(global_data);
 
 	/* Post initializations */
-	log_message(LOG_INFO, "Configuration is using : %lu Bytes", mem_allocated);
-
-	/* SSL load static data & initialize common ctx context */
-	if (!init_ssl_ctx()) {
-		stop_check();
+	if (!validate_check_config()) {
+		stop_check(KEEPALIVED_EXIT_CONFIG);
 		return;
 	}
+
+#ifdef _MEM_CHECK_
+	log_message(LOG_INFO, "Configuration is using : %zu Bytes", mem_allocated);
+#endif
+
+	/* Remove any entries left over from previous invocation */
+	if (!reload && global_data->lvs_flush)
+		ipvs_flush_cmd();
+
+#ifdef _WITH_SNMP_CHECKER_
+	if (!reload && global_data->enable_snmp_checker)
+		check_snmp_agent_init(global_data->snmp_socket);
+#endif
+
+	/* SSL load static data & initialize common ctx context */
+	if (!init_ssl_ctx())
+		stop_check(KEEPALIVED_EXIT_FATAL);
+
+	/* fill 'vsg' members of the virtual_server_t structure.
+	 * We must do that after parsing config, because
+	 * vs and vsg declarations may appear in any order
+	 */
+	link_vsg_to_vs();
+
+	/* Set the process priority and non swappable if configured */
+	if (global_data->checker_process_priority)
+		set_process_priority(global_data->checker_process_priority);
+
+	if (global_data->checker_no_swap)
+		set_process_dont_swap(4096);	/* guess a stack size to reserve */
 
 	/* Processing differential configuration parsing */
 	if (reload)
 		clear_diff_services();
 
 	/* Initialize IPVS topology */
-	if (!init_services()) {
-		stop_check();
-		return;
-	}
+	if (!init_services())
+		stop_check(KEEPALIVED_EXIT_FATAL);
 
 	/* Dump configuration */
-	if (debug & 4) {
+	if (__test_bit(DUMP_CONF_BIT, &debug)) {
 		dump_global_data(global_data);
 		dump_check_data(check_data);
 	}
@@ -145,26 +187,27 @@ start_check(void)
 }
 
 /* Reload handler */
-int reload_check_thread(thread_t *);
-void
-sighup_check(void *v, int sig)
+static int reload_check_thread(thread_t *);
+
+static void
+sighup_check(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
 	thread_add_event(master, reload_check_thread, NULL, 0);
 }
 
 /* Terminate handler */
-void
-sigend_check(void *v, int sig)
+static void
+sigend_check(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
 	if (master)
 		thread_add_terminate_event(master);
 }
 
 /* CHECK Child signal handling */
-void
+static void
 check_signal_init(void)
 {
-	signal_handler_init();
+	signal_handler_init(0);
 	signal_set(SIGHUP, sighup_check, NULL);
 	signal_set(SIGINT, sigend_check, NULL);
 	signal_set(SIGTERM, sigend_check, NULL);
@@ -172,20 +215,24 @@ check_signal_init(void)
 }
 
 /* Reload thread */
-int
-reload_check_thread(thread_t * thread)
+static int
+reload_check_thread(__attribute__((unused)) thread_t * thread)
 {
 	/* set the reloading flag */
 	SET_RELOAD;
 
-	/* Signals handling */
-	signal_reset();
-	signal_handler_destroy();
+	log_message(LOG_INFO, "Got SIGHUP, reloading checker configuration");
+
+	/* Terminate all script process */
+	script_killall(master, SIGTERM);
 
 	/* Destroy master thread */
-	thread_destroy_master(master);
-	master = thread_make_master();
+#ifdef _WITH_VRRP_
+	kernel_netlink_close();
+#endif
+	thread_cleanup_master(master);
 	free_global_data(global_data);
+
 	free_checkers_queue();
 #ifdef _WITH_VRRP_
 	free_interface_queue();
@@ -198,9 +245,6 @@ reload_check_thread(thread_t * thread)
 	check_data = NULL;
 
 	/* Reload the conf */
-	mem_allocated = 0;
-	check_signal_init();
-	signal_set(SIGCHLD, thread_child_handler, master);
 	start_check();
 
 	/* free backup data */
@@ -211,7 +255,8 @@ reload_check_thread(thread_t * thread)
 }
 
 /* CHECK Child respawning thread */
-int
+#ifndef _DEBUG_
+static int
 check_respawn_thread(thread_t * thread)
 {
 	pid_t pid;
@@ -227,10 +272,16 @@ check_respawn_thread(thread_t * thread)
 	}
 
 	/* We catch a SIGCHLD, handle it */
-	log_message(LOG_ALERT, "Healthcheck child process(%d) died: Respawning", pid);
-	start_check_child();
+	if (!__test_bit(DONT_RESPAWN_BIT, &debug)) {
+		log_message(LOG_ALERT, "Healthcheck child process(%d) died: Respawning", pid);
+		start_check_child();
+	} else {
+		log_message(LOG_ALERT, "Healthcheck child process(%d) died: Exiting", pid);
+		raise(SIGTERM);
+	}
 	return 0;
 }
+#endif
 
 /* Register CHECK thread */
 int
@@ -238,7 +289,7 @@ start_check_child(void)
 {
 #ifndef _DEBUG_
 	pid_t pid;
-	int ret;
+	char *syslog_ident;
 
 	/* Initialize child process */
 	pid = fork();
@@ -257,30 +308,38 @@ start_check_child(void)
 				 pid, RESPAWN_TIMER);
 		return 0;
 	}
+	prctl(PR_SET_PDEATHSIG, SIGTERM);
+
+	if ((instance_name
+#if HAVE_DECL_CLONE_NEWNET
+			   || network_namespace
+#endif
+					       ) &&
+	     (check_syslog_ident = make_syslog_ident(PROG_CHECK)))
+		syslog_ident = check_syslog_ident;
+	else
+		syslog_ident = PROG_CHECK;
 
 	/* Opening local CHECK syslog channel */
-	openlog(PROG_CHECK, LOG_PID | ((debug & 1) ? LOG_CONS : 0),
-		(log_facility==LOG_DAEMON) ? LOG_LOCAL2 : log_facility);
+	openlog(syslog_ident, LOG_PID | ((__test_bit(LOG_CONSOLE_BIT, &debug)) ? LOG_CONS : 0)
+			    , (log_facility==LOG_DAEMON) ? LOG_LOCAL2 : log_facility);
+
+#ifdef _MEM_CHECK_
+	mem_log_init(PROG_CHECK, "Healthcheck child process");
+#endif
+
+	free_parent_mallocs_startup(true);
 
 	/* Child process part, write pidfile */
 	if (!pidfile_write(checkers_pidfile, getpid())) {
 		log_message(LOG_INFO, "Healthcheck child process: cannot write pidfile");
-		exit(0);
+		exit(KEEPALIVED_EXIT_FATAL);
 	}
 
 	/* Create the new master thread */
 	signal_handler_destroy();
-	thread_destroy_master(master);
+	thread_destroy_master(master);	/* This destroys any residual settings from the parent */
 	master = thread_make_master();
-
-	/* change to / dir */
-	ret = chdir("/");
-	if (ret < 0) {
-		log_message(LOG_INFO, "Healthcheck child process: error chdir");
-	}
-
-	/* Set mask */
-	umask(0);
 #endif
 
 	/* If last process died during a reload, we can get there and we
@@ -298,6 +357,8 @@ start_check_child(void)
 	launch_scheduler();
 
 	/* Finish healthchecker daemon process */
-	stop_check();
-	exit(0);
+	stop_check(EXIT_SUCCESS);
+
+	/* unreachable */
+	exit(EXIT_SUCCESS);
 }

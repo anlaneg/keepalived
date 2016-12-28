@@ -1,10 +1,10 @@
-/* 
+/*
  * Soft:        Keepalived is a failover program for the LVS project
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
- * 
+ *
  * Part:        cfreader.c include file.
- *  
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
  *
  *              This program is distributed in the hope that it will be useful,
@@ -30,20 +30,24 @@
 #include <stdint.h>
 #include <syslog.h>
 #include <ctype.h>
+#include <stdbool.h>
 
 /* local includes */
 #include "vector.h"
 
 /* Global definitions */
-#define CONF "/etc/keepalived/keepalived.conf"
+#define KEEPALIVED_CONFIG_FILE "/etc/keepalived/keepalived.conf"
+#define BOB  "{"
 #define EOB  "}"
 #define MAXBUF	1024
 
-/* ketword definition */
+/* keyword definition */
 typedef struct _keyword {
-	char *string;
+	const char *string;
 	void (*handler) (vector_t *);
 	vector_t *sub;
+	void (*sub_close_handler) (void);
+	bool active;
 } keyword_t;
 
 /* Reloading helpers */
@@ -53,24 +57,23 @@ typedef struct _keyword {
 
 /* global vars exported */
 extern vector_t *keywords;
-extern FILE *current_stream;
-extern int reload;
+extern bool reload;
+extern char *config_id;
 
 /* Prototypes */
-extern void keyword_alloc(vector_t *, char *, void (*handler) (vector_t *));
-extern void keyword_alloc_sub(vector_t *, char *, void (*handler) (vector_t *));
-extern void install_keyword_root(char *, void (*handler) (vector_t *));
+extern void install_keyword_root(const char *, void (*handler) (vector_t *), bool);
 extern void install_sublevel(void);
 extern void install_sublevel_end(void);
-extern void install_keyword(char *, void (*handler) (vector_t *));
-extern void dump_keywords(vector_t *, int);
-extern void free_keywords(vector_t *);
+extern void install_sublevel_end_handler(void (*handler) (void));
+extern void install_keyword(const char *, void (*handler) (vector_t *));
 extern vector_t *alloc_strvec(char *);
-extern int read_line(char *, int);
-extern vector_t *read_value_block(void);
-extern void alloc_value_block(vector_t *, void (*alloc_func) (vector_t *));
+extern bool check_conf_file(const char*);
+extern bool read_line(char *, size_t);
+extern vector_t *read_value_block(vector_t *);
+extern void alloc_value_block(void (*alloc_func) (vector_t *));
 extern void *set_value(vector_t *);
-extern void process_stream(vector_t *);
-extern void init_data(char *, vector_t * (*init_keywords) (void));
+extern int check_true_false(char *);
+extern void skip_block(void);
+extern void init_data(const char *, vector_t * (*init_keywords) (void));
 
 #endif

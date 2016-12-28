@@ -4,14 +4,14 @@
  *              a loadbalanced server pool using multi-layer checks.
  *
  * Part:        vrrp_sync.c include file.
- * 
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
- *              
+ *
  *              This program is distributed in the hope that it will be useful,
  *              but WITHOUT ANY WARRANTY; without even the implied warranty of
  *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  *              See the GNU General Public License for more details.
- *              
+ *
  *              This program is free software; you can redistribute it and/or
  *              modify it under the terms of the GNU General Public License
  *              as published by the Free Software Foundation; either version
@@ -44,7 +44,6 @@
 extern void vrrp_init_instance_sands(vrrp_t *);
 extern void vrrp_sync_smtp_notifier(vrrp_sgroup_t *);
 extern void vrrp_sync_set_group(vrrp_sgroup_t *);
-extern int vrrp_sync_group_up(vrrp_sgroup_t *);
 extern int vrrp_sync_leave_fault(vrrp_t *);
 extern int vrrp_sync_goto_master(vrrp_t *);
 extern void vrrp_sync_backup(vrrp_t *);

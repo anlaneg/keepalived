@@ -20,6 +20,8 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 /* local include */
 #include "vrrp_index.h"
 #include "vrrp_data.h"
@@ -58,7 +60,7 @@ vrrp_index_lookup(const int vrid, const int fd)
 	 * List collision on the vrid bucket. The same
 	 * vrid is used on a different interface. We perform
 	 * a fd lookup as collisions solver.
-	 */ 
+	 */
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		vrrp =  ELEMENT_DATA(e);
 		if (vrrp->fd_in == fd)
@@ -88,13 +90,40 @@ void set_vrrp_fd_bucket(int old_fd, vrrp_t *vrrp)
 {
 	vrrp_t *vrrp_ptr;
 	element e;
+	element next;
 	list l = &vrrp_data->vrrp_index_fd[old_fd%1024 + 1];
 
-	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+	/* Release old stalled entries */
+	for (e = LIST_HEAD(l); e; e = next) {
+		next = e->next;
 		vrrp_ptr =  ELEMENT_DATA(e);
-		if (IF_INDEX(vrrp_ptr->ifp) == IF_INDEX(vrrp->ifp)) {
+		if (vrrp_ptr->fd_in == old_fd) {
+			if (e->prev)
+				e->prev->next = e->next;
+			else
+				 l->head = e->next;
+
+			if (e->next)
+				e->next->prev = e->prev;
+			else
+				l->tail = e->prev;
+			l->count--;
+			FREE(e);
+		}
+	}
+	if (LIST_ISEMPTY(l))
+		l->head = l->tail = NULL;
+
+	/* Hash refreshed entries */
+	l = vrrp_data->vrrp;
+	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+		vrrp_ptr = ELEMENT_DATA(e);
+
+		if (vrrp_ptr->fd_in == old_fd) {
+			/* Update new hash */
 			vrrp_ptr->fd_in = vrrp->fd_in;
 			vrrp_ptr->fd_out = vrrp->fd_out;
+			alloc_vrrp_fd_bucket(vrrp_ptr);
 		}
 	}
 }

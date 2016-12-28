@@ -31,8 +31,9 @@
 #include "check_data.h"
 #include "scheduler.h"
 #include "list.h"
+#include "check_api.h"
 
-#define SMTP_BUFF_MAX		512
+#define SMTP_BUFF_MAX		512U
 
 #define SMTP_START		1
 #define SMTP_HAVE_BANNER	2
@@ -42,28 +43,24 @@
 #define SMTP_RECV_QUIT		6
 
 #define SMTP_DEFAULT_HELO	"smtpchecker.keepalived.org"
-#define SMTP_DEFAULT_PORT	25
 
 /* Per host configuration structure  */
-typedef struct _smtp_host {
-	struct sockaddr_storage		dst;
-	struct sockaddr_storage		bindto;
-} smtp_host_t;
+typedef conn_opts_t smtp_host_t;
 
 /* Checker argument structure  */
 typedef struct _smtp_checker {
 	/* non per host config data goes here */
 	char				*helo_name;
-	long				timeout;
-	long				db_retry;
-	int				retry;
-	int				attempts;
-	int				host_ctr;
+	unsigned long			db_retry;
+	unsigned			retry;
+	unsigned			attempts;
+	unsigned			host_ctr;
 	smtp_host_t			*host_ptr;
+	conn_opts_t			*default_co;
 
 	/* data buffer */
 	char				buff[SMTP_BUFF_MAX];
-	int				buff_ctr;
+	size_t				buff_ctr;
 	int				(*buff_cb) (thread_t *);
 
 	int				state;
@@ -71,6 +68,9 @@ typedef struct _smtp_checker {
 	/* list holding the host config data */
 	list				host;
 } smtp_checker_t;
+
+/* macro utility */
+#define FMT_SMTP_RS(H) (inet_sockaddrtopair (&(H)->dst))
 
 /* Prototypes defs */
 extern void install_smtp_check_keyword(void);

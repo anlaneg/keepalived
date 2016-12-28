@@ -1,12 +1,12 @@
-/* 
+/*
  * Soft:        Keepalived is a failover program for the LVS project
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
- * 
+ *
  * Part:        Vector structure manipulation.
- *  
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
- *              
+ *
  *              This program is distributed in the hope that it will be useful,
  *              but WITHOUT ANY WARRANTY; without even the implied warranty of
  *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
@@ -20,10 +20,46 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
  */
 
+#include "config.h"
+
 #include "vector.h"
 #include "memory.h"
 
-/* 
+/* Function to call if attempt to read beyond end of strvec */
+static null_strvec_handler_t null_strvec_handler;
+
+null_strvec_handler_t register_null_strvec_handler(null_strvec_handler_t null_strvec_func)
+{
+	null_strvec_handler_t old_handler = null_strvec_handler;
+
+	null_strvec_handler = null_strvec_func;
+
+	return old_handler;
+}
+
+null_strvec_handler_t unregister_null_strvec_handler(void)
+{
+	null_strvec_handler_t old_handler = null_strvec_handler;
+
+	null_strvec_handler = NULL;
+
+	return old_handler;
+}
+
+void *strvec_slot(const vector_t *strvec, size_t index)
+{
+	if (strvec &&
+	    index < vector_size(strvec) &&
+	    strvec->slot[index])
+		return strvec->slot[index];
+
+	if (null_strvec_handler)
+		(*null_strvec_handler)(strvec, index);
+
+	return "";
+}
+
+/*
  * Initialize vector struct.
  * allocalted 'size' slot elements then return vector.
  */
@@ -34,6 +70,7 @@ vector_alloc(void)
 	return v;
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 vector_t *
 vector_init(unsigned int size)
 {
@@ -48,6 +85,7 @@ vector_init(unsigned int size)
 	v->slot = (void *) MALLOC(sizeof(void *) * size);
 	return v;
 }
+#endif
 
 /* allocated one slot */
 void
@@ -60,16 +98,21 @@ vector_alloc_slot(vector_t *v)
 		v->slot = (void *) MALLOC(sizeof (void *) * v->allocated);
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 /* Insert a value into a specific slot */
 void
-vector_insert_slot(vector_t *v, int index, void *value)
+vector_insert_slot(vector_t *v, unsigned int index, void *value)
 {
-	int i;
+	unsigned int i;
 
 	vector_alloc_slot(v);
 	for (i = (v->allocated / VECTOR_DEFAULT_SIZE) - 2; i >= index; i--)
 		v->slot[i + 1] = v->slot[i];
 	v->slot[index] = value;
+	if (v->active >= index + 1)
+		v->active++;
+	else
+		v->active = index + 1;
 }
 
 /* Copy / dup a vector */
@@ -90,7 +133,7 @@ vector_copy(vector_t *v)
 }
 
 /* Check assigned index, and if it runs short double index pointer */
-void
+static void
 vector_ensure(vector_t *v, unsigned int num)
 {
 	if (v->allocated > num)
@@ -108,7 +151,7 @@ vector_ensure(vector_t *v, unsigned int num)
  * the slot's index memory is assigned, please call vector_ensure()
  * after calling this function.
  */
-int
+static int
 vector_empty_slot(vector_t *v)
 {
 	unsigned int i;
@@ -141,6 +184,7 @@ vector_set(vector_t *v, void *val)
 
 	return i;
 }
+#endif
 
 /* Set a vector slot value */
 void
@@ -149,8 +193,10 @@ vector_set_slot(vector_t *v, void *value)
 	unsigned int i = v->allocated - 1;
 
 	v->slot[i] = value;
+	v->active = v->allocated;
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 /* Set value to specified index slot. */
 int
 vector_set_index(vector_t *v, unsigned int i, void *val)
@@ -181,6 +227,7 @@ vector_lookup_ensure(vector_t *v, unsigned int i)
 	vector_ensure(v, i);
 	return v->slot[i];
 }
+#endif
 
 /* Unset value at specified index slot. */
 void
@@ -198,7 +245,7 @@ vector_unset(vector_t *v, unsigned int i)
 	}
 }
 
-/* Count the number of not emplty slot. */
+/* Count the number of not empty slot. */
 unsigned int
 vector_count(vector_t *v)
 {
@@ -214,6 +261,7 @@ vector_count(vector_t *v)
 	return count;
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 /* Free memory vector allocation */
 void
 vector_only_wrapper_free(vector_t *v)
@@ -232,6 +280,7 @@ vector_only_index_free(void *slot)
 {
 	vector_only_slot_free(slot);
 }
+#endif
 
 void
 vector_free(vector_t *v)
@@ -242,15 +291,15 @@ vector_free(vector_t *v)
 
 /* dump vector slots */
 void
-vector_dump(vector_t *v)
+vector_dump(FILE *fp, vector_t *v)
 {
-	int i;
+	unsigned int i;
 
-	printf("Vector Size : %d\n", v->allocated);
+	fprintf(fp, "Vector Size : %d, active %d\n", v->allocated, v->active);
 
 	for (i = 0; i < v->allocated; i++) {
 		if (v->slot[i] != NULL) {
-			printf("  Slot [%d]: %p\n", i, vector_slot(v, i));
+			fprintf(fp, "  Slot [%d]: %p\n", i, vector_slot(v, i));
 		}
 	}
 }
@@ -259,7 +308,7 @@ vector_dump(vector_t *v)
 void
 free_strvec(vector_t *strvec)
 {
-	int i;
+	unsigned int i;
 	char *str;
 
 	if (!strvec)
@@ -274,10 +323,11 @@ free_strvec(vector_t *strvec)
 	vector_free(strvec);
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 void
 dump_strvec(vector_t *strvec)
 {
-	int i;
+	unsigned int i;
 	char *str;
 
 	if (!strvec)
@@ -291,3 +341,4 @@ dump_strvec(vector_t *strvec)
 	}
 	printf("\n");
 }
+#endif

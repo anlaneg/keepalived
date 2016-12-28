@@ -23,12 +23,8 @@
 #ifndef _HTML_H
 #define _HTML_H
 
-/* HTTP header tag */
-#define CONTENT_LENGTH	"Content-Length:"
-
 /* Prototypes */
-extern int extract_content_length(char *buffer, int size);
-extern int extract_status_code(char *buffer, int size);
-extern char *extract_html(char *buffer, int size_buffer);
+extern int extract_status_code(char *buffer, size_t size);
+extern char *extract_html(char *buffer, size_t size_buffer);
 
 #endif

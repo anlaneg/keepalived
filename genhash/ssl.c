@@ -22,13 +22,20 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
+/* system includes */
 #include <openssl/err.h>
-#include "main.h"
-#include "sock.h"
-#include "http.h"
-#include "ssl.h"
+
+/* keepalived includes */
 #include "utils.h"
 #include "html.h"
+
+/* genhash includes */
+#include "include/main.h"
+#include "include/sock.h"
+#include "include/http.h"
+#include "include/ssl.h"
 
 /* extern variables */
 extern REQ *req;
@@ -151,7 +158,7 @@ ssl_read_thread(thread_t * thread)
 	 * I/O multiplexer thread framework because it enter
 	 * a synchronous read process for each GET reply.
 	 * Sound a little nasty !.
-	 * 
+	 *
 	 * Why OpenSSL doesn t handle underlying fd. This
 	 * break the I/O (select()) approach !...
 	 * If you read this and know the answer, please reply
@@ -163,8 +170,14 @@ ssl_read_thread(thread_t * thread)
       read_stream:
 
 	/* read the SSL stream */
-	memset(sock_obj->buffer, 0, MAX_BUFFER_LENGTH);
-	r = SSL_read(sock_obj->ssl, sock_obj->buffer, MAX_BUFFER_LENGTH);
+	r = MAX_BUFFER_LENGTH - sock_obj->size;
+	if (r <= 0) {
+		/* defensive check, should not occur */
+		fprintf(stderr, "SSL socket buffer overflow (not consumed)\n");
+		r = MAX_BUFFER_LENGTH;
+	}
+	memset(sock_obj->buffer + sock_obj->size, 0, (size_t)r);
+	r = SSL_read(sock_obj->ssl, sock_obj->buffer + sock_obj->size, r);
 	error = SSL_get_error(sock_obj->ssl, r);
 
 	DBG(" [l:%d,fd:%d]\n", r, sock_obj->fd);

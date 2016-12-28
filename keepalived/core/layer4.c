@@ -21,29 +21,51 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 #include "layer4.h"
-#include "check_api.h"
 #include "utils.h"
+#include "logger.h"
 
 enum connect_result
-tcp_bind_connect(int fd, struct sockaddr_storage *addr, struct sockaddr_storage *bind_addr)
+socket_bind_connect(int fd, conn_opts_t *co)
 {
-	struct linger li = { 0 };
+	int opt;
+	socklen_t optlen;
+	struct linger li;
 	socklen_t addrlen;
 	int ret;
 	int val;
+	struct sockaddr_storage *addr = &co->dst;
+	struct sockaddr_storage *bind_addr = &co->bindto;
 
-	/* free the tcp port after closing the socket descriptor */
-	li.l_onoff = 1;
-	li.l_linger = 0;
-	setsockopt(fd, SOL_SOCKET, SO_LINGER, (char *) &li, sizeof (struct linger));
+	optlen = sizeof(opt);
+	if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (void *) &opt, &optlen) < 0) {
+		log_message(LOG_ERR, "Can't get socket type: %s", strerror(errno));
+		return connect_error;
+	}
+	if (opt == SOCK_STREAM) {
+		/* free the tcp port after closing the socket descriptor */
+		li.l_onoff = 1;
+		li.l_linger = 0;
+		setsockopt(fd, SOL_SOCKET, SO_LINGER, (char *) &li, sizeof (struct linger));
+	}
 
 	/* Make socket non-block. */
 	val = fcntl(fd, F_GETFL, 0);
 	fcntl(fd, F_SETFL, val | O_NONBLOCK);
 
+#ifdef _WITH_SO_MARK_
+	if (co->fwmark) {
+		if (setsockopt (fd, SOL_SOCKET, SO_MARK, &co->fwmark, sizeof (co->fwmark)) < 0) {
+			log_message(LOG_ERR, "Error setting fwmark %d to socket: %s", co->fwmark, strerror(errno));
+			return connect_error;
+		}
+	}
+#endif
+
 	/* Bind socket */
-	if (bind_addr && ((struct sockaddr *) bind_addr)->sa_family != AF_UNSPEC) {
+	if (((struct sockaddr *) bind_addr)->sa_family != AF_UNSPEC) {
 		addrlen = sizeof(*bind_addr);
 		if (bind(fd, (struct sockaddr *) bind_addr, addrlen) != 0)
 			return connect_error;
@@ -71,13 +93,16 @@ tcp_bind_connect(int fd, struct sockaddr_storage *addr, struct sockaddr_storage 
 }
 
 enum connect_result
-tcp_connect(int fd, struct sockaddr_storage *addr)
+socket_connect(int fd, struct sockaddr_storage *addr)
 {
-	return tcp_bind_connect(fd, addr, NULL);
+	conn_opts_t co;
+	memset(&co, 0, sizeof(co));
+	co.dst = *addr;
+	return socket_bind_connect(fd, &co);
 }
 
 enum connect_result
-tcp_socket_state(int fd, thread_t * thread, int (*func) (thread_t *))
+socket_state(thread_t * thread, int (*func) (thread_t *))
 {
 	int status;
 	socklen_t addrlen;
@@ -109,7 +134,7 @@ tcp_socket_state(int fd, thread_t * thread, int (*func) (thread_t *))
 	if (status == EINPROGRESS) {
 		timer_min = timer_sub_now(thread->sands);
 		thread_add_write(thread->master, func, THREAD_ARG(thread),
-				 thread->u.fd, timer_long(timer_min));
+				 thread->u.fd, -timer_long(timer_min));
 		return connect_in_progress;
 	} else if (status != 0) {
 		close(thread->u.fd);
@@ -120,8 +145,8 @@ tcp_socket_state(int fd, thread_t * thread, int (*func) (thread_t *))
 }
 
 int
-tcp_connection_state(int fd, enum connect_result status, thread_t * thread,
-		     int (*func) (thread_t *), long timeout)
+socket_connection_state(int fd, enum connect_result status, thread_t * thread,
+		     int (*func) (thread_t *), unsigned long timeout)
 {
 	checker_t *checker;
 

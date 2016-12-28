@@ -4,14 +4,14 @@
  *              a loadbalanced server pool using multi-layer checks.
  *
  * Part:        Scheduling framework. This code is highly inspired from
- *              the thread management routine (thread.c) present in the 
+ *              the thread management routine (thread.c) present in the
  *              very nice zebra project (http://www.zebra.org).
  *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
  *
- *              This program is distributed in the hope that it will be useful, 
- *              but WITHOUT ANY WARRANTY; without even the implied warranty of 
- *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  
+ *              This program is distributed in the hope that it will be useful,
+ *              but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  *              See the GNU General Public License for more details.
  *
  *              This program is free software; you can redistribute it and/or
@@ -22,6 +22,8 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
  */
 
+#include "config.h"
+
 /* SNMP should be included first: it redefines "FREE" */
 #ifdef _WITH_SNMP_
 #include <net-snmp/net-snmp-config.h>
@@ -31,6 +33,10 @@
 #undef FREE
 #endif
 
+#ifndef _DEBUG_
+#define NDEBUG
+#endif
+#include <assert.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/select.h>
@@ -40,9 +46,78 @@
 #include "utils.h"
 #include "signals.h"
 #include "logger.h"
+#include "bitops.h"
 
 /* global vars */
 thread_master_t *master = NULL;
+
+#ifdef _WITH_LVS_
+#include "../keepalived/include/check_daemon.h"
+#endif
+#ifdef _WITH_VRRP_
+#include "../keepalived/include/vrrp_daemon.h"
+#endif
+#include "../keepalived/include/main.h"
+
+/* Function that returns if pid is a known child, and sets *prog_name accordingly */
+static bool (*child_finder)(pid_t pid, char const **prog_name);
+
+void
+set_child_finder(bool (*func)(pid_t, char const **))
+{
+	child_finder = func;
+}
+
+/* report_child_status returns true if the exit is a hard error, so unable to continue */
+bool
+report_child_status(int status, pid_t pid, char const *prog_name)
+{
+	char const *prog_id = NULL;
+	char pid_buf[10];	/* "pid 32767" + '\0' */
+	int exit_status ;
+	bool keepalived_child_process = false;
+
+	if (prog_name) {
+		prog_id = prog_name;
+		keepalived_child_process = true;
+	}
+	else if (child_finder && child_finder(pid, &prog_id))
+		keepalived_child_process = true;
+	else {
+		snprintf(pid_buf, sizeof(pid_buf), "pid %d", pid);
+		prog_id = pid_buf;
+	}
+
+	if (WIFEXITED(status)) {
+		exit_status = WEXITSTATUS(status);
+
+		/* Handle exit codes of vrrp or checker child */
+		if (keepalived_child_process &&
+		    (exit_status == KEEPALIVED_EXIT_FATAL ||
+		     exit_status == KEEPALIVED_EXIT_CONFIG)) {
+			log_message(LOG_INFO, "%s exited with permanent error %s. Terminating", prog_id, exit_status == KEEPALIVED_EXIT_CONFIG ? "CONFIG" : "FATAL" );
+			return true;
+		}
+
+		if (exit_status != EXIT_SUCCESS)
+			log_message(LOG_INFO, "%s exited with status %d", prog_id, exit_status);
+		return false;
+	}
+	if (WIFSIGNALED(status)) {
+		if (WTERMSIG(status) == SIGSEGV) {
+			log_message(LOG_INFO, "%s exited due to segmentation fault (SIGSEGV).", prog_id);
+			log_message(LOG_INFO, "  Please report a bug at %s", "https://github.com/acassen/keepalived/issues");
+			log_message(LOG_INFO, "  %s", "and include this log from when keepalived started, what happened");
+			log_message(LOG_INFO, "  %s", "immediately before the crash, and your configuration file.");
+		}
+		else
+			log_message(LOG_INFO, "%s exited due to signal %d", prog_id, WTERMSIG(status));
+
+		return false;
+	}
+
+	return false;
+}
 
 /* Make thread master. */
 thread_master_t *
@@ -69,7 +144,7 @@ thread_list_add(thread_list_t * list, thread_t * thread)
 }
 
 /* Add a new thread to the list. */
-void
+static void
 thread_list_add_before(thread_list_t * list, thread_t * point, thread_t * thread)
 {
 	thread->next = point;
@@ -83,7 +158,7 @@ thread_list_add_before(thread_list_t * list, thread_t * point, thread_t * thread
 }
 
 /* Add a thread in the list sorted by timeval */
-void
+static void
 thread_list_add_timeval(thread_list_t * list, thread_t * thread)
 {
 	thread_t *tt;
@@ -100,7 +175,7 @@ thread_list_add_timeval(thread_list_t * list, thread_t * thread)
 }
 
 /* Delete a thread from the list. */
-thread_t *
+static thread_t *
 thread_list_delete(thread_list_t * list, thread_t * thread)
 {
 	if (thread->next)
@@ -162,13 +237,6 @@ thread_destroy_list(thread_master_t * m, thread_list_t thread_list)
 		t = thread;
 		thread = t->next;
 
-		if (t->type == THREAD_READY_FD ||
-		    t->type == THREAD_READ ||
-		    t->type == THREAD_WRITE ||
-		    t->type == THREAD_READ_TIMEOUT ||
-		    t->type == THREAD_WRITE_TIMEOUT)
-			close (t->u.fd);
-
 		thread_list_delete(&thread_list, t);
 		t->type = THREAD_UNUSED;
 		thread_add_unuse(m, t);
@@ -176,13 +244,14 @@ thread_destroy_list(thread_master_t * m, thread_list_t thread_list)
 }
 
 /* Cleanup master */
-static void
+void
 thread_cleanup_master(thread_master_t * m)
 {
 	/* Unuse current thread lists */
 	thread_destroy_list(m, m->read);
 	thread_destroy_list(m, m->write);
 	thread_destroy_list(m, m->timer);
+	thread_destroy_list(m, m->child);
 	thread_destroy_list(m, m->event);
 	thread_destroy_list(m, m->ready);
 
@@ -193,6 +262,8 @@ thread_cleanup_master(thread_master_t * m)
 
 	/* Clean garbage */
 	thread_clean_unuse(m);
+
+	memset(m, 0, sizeof(*m));
 }
 
 /* Stop thread scheduler. */
@@ -204,7 +275,7 @@ thread_destroy_master(thread_master_t * m)
 }
 
 /* Delete top of the list and return it. */
-thread_t *
+static thread_t *
 thread_trim_head(thread_list_t * list)
 {
 	if (list->head)
@@ -213,7 +284,7 @@ thread_trim_head(thread_list_t * list)
 }
 
 /* Make new thread. */
-thread_t *
+static thread_t *
 thread_new(thread_master_t * m)
 {
 	thread_t *new;
@@ -233,7 +304,7 @@ thread_new(thread_master_t * m)
 /* Add new read thread. */
 thread_t *
 thread_add_read(thread_master_t * m, int (*func) (thread_t *)
-		, void *arg, int fd, long timer)
+		, void *arg, int fd, unsigned long timer)
 {
 	thread_t *thread;
 
@@ -266,7 +337,7 @@ thread_add_read(thread_master_t * m, int (*func) (thread_t *)
 /* Add new write thread. */
 thread_t *
 thread_add_write(thread_master_t * m, int (*func) (thread_t *)
-		 , void *arg, int fd, long timer)
+		 , void *arg, int fd, unsigned long timer)
 {
 	thread_t *thread;
 
@@ -299,7 +370,7 @@ thread_add_write(thread_master_t * m, int (*func) (thread_t *)
 /* Add timer event thread. */
 thread_t *
 thread_add_timer(thread_master_t * m, int (*func) (thread_t *)
-		 , void *arg, long timer)
+		 , void *arg, unsigned long timer)
 {
 	thread_t *thread;
 
@@ -325,7 +396,7 @@ thread_add_timer(thread_master_t * m, int (*func) (thread_t *)
 /* Add a child thread. */
 thread_t *
 thread_add_child(thread_master_t * m, int (*func) (thread_t *)
-		 , void * arg, pid_t pid, long timer)
+		 , void * arg, pid_t pid, unsigned long timer)
 {
 	thread_t *thread;
 
@@ -392,9 +463,12 @@ thread_add_terminate_event(thread_master_t * m)
 }
 
 /* Cancel thread from scheduler. */
-void
+int
 thread_cancel(thread_t * thread)
 {
+	if (!thread)
+		return -1;
+
 	switch (thread->type) {
 	case THREAD_READ:
 		assert(FD_ISSET(thread->u.fd, &thread->master->readfd));
@@ -429,8 +503,10 @@ thread_cancel(thread_t * thread)
 
 	thread->type = THREAD_UNUSED;
 	thread_add_unuse(thread->master, thread);
+	return 0;
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 /* Delete all events which has argument value arg. */
 void
 thread_cancel_event(thread_master_t * m, void *arg)
@@ -451,6 +527,7 @@ thread_cancel_event(thread_master_t * m, void *arg)
 		}
 	}
 }
+#endif
 
 /* Update timer value */
 static void
@@ -480,7 +557,7 @@ thread_compute_timer(thread_master_t * m, timeval_t * timer_wait)
 	thread_update_timer(&m->read, &timer_min);
 	thread_update_timer(&m->child, &timer_min);
 
-	/* Take care about monothonic clock */
+	/* Take care about monotonic clock */
 	if (!timer_isnull(timer_min)) {
 		timer_min = timer_sub(timer_min, time_now);
 		if (timer_min.tv_sec < 0) {
@@ -579,7 +656,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	/* we have to save errno here because the next syscalls will set it */
 	old_errno = errno;
 
-       /* Handle SNMP stuff */
+	/* Handle SNMP stuff */
 #ifdef _WITH_SNMP_
 	if (ret > 0)
 		snmp_read(&readfd);
@@ -614,7 +691,8 @@ retry:	/* When thread can't fetch try to find next thread again. */
 			thread_list_delete(&m->child, t);
 			thread_list_add(&m->ready, t);
 			t->type = THREAD_CHILD_TIMEOUT;
-		}
+		} else
+			break;
 	}
 
 	/* Read thead. */
@@ -679,7 +757,8 @@ retry:	/* When thread can't fetch try to find next thread again. */
 			thread_list_delete(&m->timer, t);
 			thread_list_add(&m->ready, t);
 			t->type = THREAD_READY;
-		}
+		} else
+			break;
 	}
 
 	/* Return one event. */
@@ -702,8 +781,8 @@ retry:	/* When thread can't fetch try to find next thread again. */
 }
 
 /* Synchronous signal handler to reap child processes */
-void
-thread_child_handler(void * v, int sig)
+static void
+thread_child_handler(void * v, __attribute__ ((unused)) int unused)
 {
 	thread_master_t * m = v;
 
@@ -713,7 +792,9 @@ thread_child_handler(void * v, int sig)
 	 */
 	thread_t *thread;
 	pid_t pid;
-	int status = 77;
+	int status;
+	bool respawn;
+
 	while ((pid = waitpid(-1, &status, WNOHANG))) {
 		if (pid == -1) {
 			if (errno == ECHILD)
@@ -721,6 +802,8 @@ thread_child_handler(void * v, int sig)
 			DBG("waitpid error: %s", strerror(errno));
 			assert(0);
 		} else {
+			respawn = !report_child_status(status, pid, NULL);
+
 			thread = m->child.head;
 			while (thread) {
 				thread_t *t;
@@ -728,9 +811,16 @@ thread_child_handler(void * v, int sig)
 				thread = t->next;
 				if (pid == t->u.c.pid) {
 					thread_list_delete(&m->child, t);
-					thread_list_add(&m->ready, t);
 					t->u.c.status = status;
-					t->type = THREAD_READY;
+					if (respawn) {
+						t->type = THREAD_READY;
+						thread_list_add(&m->ready, t);
+					}
+					else {
+						/* The child had a permanant error, so no point in respawning */
+						raise(SIGTERM);
+					}
+
 					break;
 				}
 			}
@@ -740,7 +830,7 @@ thread_child_handler(void * v, int sig)
 
 
 /* Make unique thread id for non pthread version of thread manager. */
-unsigned long int
+static unsigned long
 thread_get_id(void)
 {
 	static unsigned long int counter = 0;
@@ -770,8 +860,10 @@ launch_scheduler(void)
 	while (thread_fetch(master, &thread)) {
 		/* Run until error, used for debuging only */
 #ifdef _DEBUG_
-		if ((debug & 520) == 520) {
-			debug &= ~520;
+		if (__test_bit(MEM_ERR_DETECT_BIT, &debug) &&
+		    __test_bit(DONT_RELEASE_VRRP_BIT, &debug)) {
+			__clear_bit(MEM_ERR_DETECT_BIT, &debug);
+			__clear_bit(DONT_RELEASE_VRRP_BIT, &debug);
 			thread_add_terminate_event(master);
 		}
 #endif

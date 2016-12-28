@@ -20,50 +20,47 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
  */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdlib.h>
 #include "html.h"
 #include "memory.h"
 
+#ifdef _INCLUDE_UNUSED_CODE_
+
+/* HTTP header tag */
+#define CONTENT_LENGTH	"Content-Length:"
+
 /* Return the http header content length */
-int extract_content_length(char *buffer, int size)
+int extract_content_length(char *buffer, size_t size)
 {
 	char *clen = strstr(buffer, CONTENT_LENGTH);
-	char *content_buffer = NULL;
-	char *buf_len;
-	int inc = 0;
-	int i;
-
-	/* Allocate the room */
-	buf_len = (char *)MALLOC(40);
 
 	/* Pattern not found */
 	if (!clen)
 		return 0;
 
 	/* Content-Length extraction */
-	while (*(clen++) != ':');
-	content_buffer = clen;
-	while (*(clen++) != '\r' && *clen != '\n')
-		inc++;
-	for (i = 0; i < inc; i++)
-		strncat(buf_len, content_buffer+i, 1);
-	i = atoi(buf_len);
-	FREE(buf_len);
-	return i;
+	if (!(clen = strchr(clen, ':')))
+		return 0;
+
+	return atoi(clen+1);
 }
+#endif
 
 /*
  * Return the http header error code. According
  * to rfc2616.6.1 status code is between HTTP_Version
  * and Reason_Phrase, separated by space caracter.
  */
-int extract_status_code(char *buffer, int size)
+int extract_status_code(char *buffer, size_t size)
 {
 	char *buf_code;
 	char *begin;
 	char *end = buffer + size;
-	int inc = 0;
+	size_t inc = 0;
+	int code;
 
 	/* Allocate the room */
 	buf_code = (char *)MALLOC(10);
@@ -74,13 +71,13 @@ int extract_status_code(char *buffer, int size)
 	while (buffer < end && *buffer++ != ' ')
 		inc++;
 	strncat(buf_code, begin, inc);
-	inc = atoi(buf_code);
+	code = atoi(buf_code);
 	FREE(buf_code);
-	return inc;
+	return code;
 }
 
 /* simple function returning a pointer to the html buffer begin */
-char *extract_html(char *buffer, int size_buffer)
+char *extract_html(char *buffer, size_t size_buffer)
 {
 	char *end = buffer + size_buffer;
 	char *cur;

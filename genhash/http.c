@@ -22,26 +22,33 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
+/* system includes */
 #include <errno.h>
 #include <openssl/err.h>
+
+/* keepalived includes */
 #include "memory.h"
-#include "http.h"
-#include "layer4.h"
-#include "main.h"
 #include "utils.h"
 #include "html.h"
 #include "timer.h"
 
-/* 
+/* genhash includes */
+#include "include/http.h"
+#include "include/layer4.h"
+#include "include/main.h"
+
+/*
  * The global design of this checker is the following :
- * 
+ *
  * - All the actions are done asynchronously.
  * - All the actions handle timeout connection.
  * - All the actions handle error from low layer to upper
  *   layers.
- * 
+ *
  * The global synopsis of the inter-thread-call is :
- *     
+ *
  *     http_request_thread (send SSL GET request)
  *            v
  *     http_response_thread (initialize read stream step)
@@ -53,6 +60,35 @@
  *  ------------------------------
  *   finalize    /     epilog
  */
+
+const hash_t hashes[hash_guard] = {
+	[hash_md5] = {
+		(hash_init_f) MD5_Init,
+		(hash_update_f) MD5_Update,
+		(hash_final_f) MD5_Final,
+		MD5_DIGEST_LENGTH,
+		"MD5",
+		"MD5SUM",
+	},
+#ifdef _WITH_SHA1_
+	[hash_sha1] = {
+		(hash_init_f) SHA1_Init,
+		(hash_update_f) SHA1_Update,
+		(hash_final_f) SHA1_Final,
+		SHA_DIGEST_LENGTH,
+		"SHA1",
+		"SHA1SUM",
+	}
+#endif
+};
+
+#define HASH_LENGTH(sock)	((sock)->hash->length)
+#define HASH_LABEL(sock)	((sock)->hash->label)
+#define HASH_INIT(sock)		((sock)->hash->init(&(sock)->context))
+#define HASH_UPDATE(sock, buf, len) \
+	((sock)->hash->update(&(sock)->context, (buf), (len)))
+#define HASH_FINAL(sock, digest) \
+	((sock)->hash->final((digest), &(sock)->context))
 
 /* free allocated pieces */
 static void
@@ -88,20 +124,22 @@ int
 finalize(thread_t * thread)
 {
 	SOCK *sock_obj = THREAD_ARG(thread);
-	unsigned char digest[16];
+
+	unsigned char digest_length = HASH_LENGTH(sock_obj);
+	unsigned char digest[digest_length];
 	int i;
 
-	/* Compute final MD5 digest */
-	MD5_Final(digest, &sock_obj->context);
+	/* Compute final hash digest */
+	HASH_FINAL(sock_obj, digest);
 	if (req->verbose) {
 		printf("\n");
-		printf(HTML_MD5);
-		dump_buffer((char *) digest, 16);
+		printf(HTML_HASH);
+		dump_buffer((char *) digest, digest_length, stdout);
 
-		printf(HTML_MD5_FINAL);
+		printf(HTML_HASH_FINAL);
 	}
-	printf("MD5SUM = ");
-	for (i = 0; i < 16; i++)
+	printf("%s = ", HASH_LABEL(sock_obj));
+	for (i = 0; i < digest_length; i++)
 		printf("%02x", digest[i]);
 	printf("\n\n");
 
@@ -112,11 +150,11 @@ finalize(thread_t * thread)
 
 /* Dump HTTP header */
 static void
-http_dump_header(char *buffer, int size)
+http_dump_header(char *buffer, size_t size)
 {
-	int r;
+	size_t r;
 
-	dump_buffer(buffer, size);
+	dump_buffer(buffer, size, stdout);
 	printf(HTTP_HEADER_ASCII);
 	for (r = 0; r < size; r++)
 		printf("%c", buffer[r]);
@@ -133,24 +171,24 @@ http_process_stream(SOCK * sock_obj, int r)
 	if (!sock_obj->extracted) {
 		if (req->verbose)
 			printf(HTTP_HEADER_HEXA);
-		if ((sock_obj->extracted = extract_html(sock_obj->buffer, sock_obj->size))) {
+		if ((sock_obj->extracted = extract_html(sock_obj->buffer, (size_t)sock_obj->size))) {
 			if (req->verbose)
-				http_dump_header(sock_obj->buffer,
-						 sock_obj->extracted - sock_obj->buffer);
-			r = sock_obj->size - (sock_obj->extracted - sock_obj->buffer);
+				http_dump_header(sock_obj->buffer + (sock_obj->size - r),
+						 (size_t)((sock_obj->extracted - sock_obj->buffer) - (sock_obj->size - r)));
+			r = sock_obj->size - (int)(sock_obj->extracted - sock_obj->buffer);
 			if (r) {
 				if (req->verbose) {
 					printf(HTML_HEADER_HEXA);
-					dump_buffer(sock_obj->extracted, r);
+					dump_buffer(sock_obj->extracted, (size_t)r, stdout);
 				}
-				memmove(sock_obj->buffer, sock_obj->extracted, r);
-				MD5_Update(&sock_obj->context, sock_obj->buffer, r);
+				memmove(sock_obj->buffer, sock_obj->extracted, (size_t)r);
+				HASH_UPDATE(sock_obj, sock_obj->buffer, (size_t)r);
 				r = 0;
 			}
 			sock_obj->size = r;
 		} else {
 			if (req->verbose)
-				http_dump_header(sock_obj->buffer, sock_obj->size);
+				http_dump_header(sock_obj->buffer + (sock_obj->size - r), (size_t)r);
 
 			/* minimize buffer using no 2*CR/LF found yet */
 			if (sock_obj->size > 4) {
@@ -161,8 +199,8 @@ http_process_stream(SOCK * sock_obj, int r)
 		}
 	} else if (sock_obj->size) {
 		if (req->verbose)
-			dump_buffer(sock_obj->buffer, r);
-		MD5_Update(&sock_obj->context, sock_obj->buffer, sock_obj->size);
+			dump_buffer(sock_obj->buffer, (size_t)r, stdout);
+		HASH_UPDATE(sock_obj, sock_obj->buffer, (size_t)sock_obj->size);
 		sock_obj->size = 0;
 	}
 
@@ -174,24 +212,29 @@ int
 http_read_thread(thread_t * thread)
 {
 	SOCK *sock_obj = THREAD_ARG(thread);
-	int r = 0;
+	ssize_t r = 0;
 
 	/* Handle read timeout */
 	if (thread->type == THREAD_READ_TIMEOUT)
 		return epilog(thread);
 
 	/* read the HTTP stream */
-	memset(sock_obj->buffer, 0, MAX_BUFFER_LENGTH);
-	r = read(thread->u.fd, sock_obj->buffer + sock_obj->size,
-		 MAX_BUFFER_LENGTH - sock_obj->size);
+	r = MAX_BUFFER_LENGTH - sock_obj->size;
+	if (r <= 0) {
+		/* defensive check, should not occur */
+		fprintf(stderr, "HTTP socket buffer overflow (not consumed)\n");
+		r = MAX_BUFFER_LENGTH;
+	}
+	memset(sock_obj->buffer + sock_obj->size, 0, (size_t)r);
+	r = read(thread->u.fd, sock_obj->buffer + sock_obj->size, (size_t)r);
 
-	DBG(" [l:%d,fd:%d]\n", r, sock_obj->fd);
+	DBG(" [l:%zd,fd:%d]\n", r, sock_obj->fd);
 
 	if (r == -1 || r == 0) {	/* -1:error , 0:EOF */
 		if (r == -1) {
 			/* We have encourred a real read error */
 			DBG("Read error with server [%s]:%d: %s\n",
-			    inet_ntop2(req->addr_ip), ntohs(req->addr_port),
+			    req->ipaddress, ntohs(req->addr_port),
 			    strerror(errno));
 			return epilog(thread);
 		}
@@ -200,7 +243,7 @@ http_read_thread(thread_t * thread)
 		finalize(thread);
 	} else {
 		/* Handle the response stream */
-		http_process_stream(sock_obj, r);
+		http_process_stream(sock_obj, (int)r);
 
 		/*
 		 * Register next http stream reader.
@@ -229,8 +272,9 @@ http_response_thread(thread_t * thread)
 	/* Allocate & clean the get buffer */
 	sock_obj->buffer = (char *) MALLOC(MAX_BUFFER_LENGTH);
 
-	/* Initalize the MD5 context */
-	MD5_Init(&sock_obj->context);
+	/* Initalize the hash context */
+	sock_obj->hash = &hashes[req->hash];
+	HASH_INIT(sock_obj);
 
 	/* Register asynchronous http/ssl read thread */
 	if (req->ssl)
@@ -248,6 +292,8 @@ http_request_thread(thread_t * thread)
 {
 	SOCK *sock_obj = THREAD_ARG(thread);
 	char *str_request;
+	char *request_host;
+	char *request_host_port;
 	int ret = 0;
 
 	/* Handle read timeout */
@@ -258,27 +304,39 @@ http_request_thread(thread_t * thread)
 	str_request = (char *) MALLOC(GET_BUFFER_LENGTH);
 	memset(str_request, 0, GET_BUFFER_LENGTH);
 
-	snprintf(str_request, GET_BUFFER_LENGTH, REQUEST_TEMPLATE,
-		 req->url, (req->vhost) ? req->vhost : inet_ntop2(req->addr_ip)
-		 , ntohs(req->addr_port));
+	if (req->vhost) {
+		/* If vhost was defined we don't need to override it's port */
+		request_host = req->vhost;
+		request_host_port = (char*) MALLOC(1);
+		*request_host_port = 0;
+	} else {
+		request_host = req->ipaddress;
+
+		/* Allocate a buffer for the port string ( ":" [0-9][0-9][0-9][0-9][0-9] "\0" ) */
+		request_host_port = (char*) MALLOC(7);
+		snprintf(request_host_port, 7, ":%d",
+		 ntohs(req->addr_port));
+	}
+
+	snprintf(str_request, GET_BUFFER_LENGTH,
+		 (req->dst && req->dst->ai_family == AF_INET6 && !req->vhost) ? REQUEST_TEMPLATE_IPV6 : REQUEST_TEMPLATE,
+		  req->url, request_host, request_host_port);
+
+	FREE(request_host_port);
 
 	/* Send the GET request to remote Web server */
 	DBG("Sending GET request [%s] on fd:%d\n", req->url, sock_obj->fd);
 	if (req->ssl)
-		ret =
-		    ssl_send_request(sock_obj->ssl, str_request,
-				     strlen(str_request));
+		ret = ssl_send_request(sock_obj->ssl, str_request, (int)strlen(str_request));
 	else
-		ret =
-		    (send(sock_obj->fd, str_request, strlen(str_request), 0) !=
-		     -1) ? 1 : 0;
+		ret = (send(sock_obj->fd, str_request, strlen(str_request), 0) != -1) ? 1 : 0;
 
 	FREE(str_request);
 
 	if (!ret) {
 		fprintf(stderr, "Cannot send get request to [%s]:%d.\n",
-			inet_ntop2(req->addr_ip)
-			, ntohs(req->addr_port));
+			req->ipaddress,
+			ntohs(req->addr_port));
 		return epilog(thread);
 	}
 

@@ -20,6 +20,8 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 #include <syslog.h>
 #include "daemon.h"
 #include "logger.h"
@@ -63,19 +65,8 @@ xdaemon(int nochdir, int noclose, int exitflag)
 	}
 
 	/* File descriptor close. */
-	if (!noclose) {
-		int fd;
+	if (!noclose)
+		set_std_fd(true);
 
-		fd = open("/dev/null", O_RDWR, 0);
-		if (fd != -1) {
-			dup2(fd, STDIN_FILENO);
-			dup2(fd, STDOUT_FILENO);
-			dup2(fd, STDERR_FILENO);
-			if (fd > 2)
-				close(fd);
-		}
-	}
-
-	umask(0);
 	return 0;
 }

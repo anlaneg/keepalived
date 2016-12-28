@@ -1,12 +1,12 @@
-/* 
+/*
  * Soft:        Keepalived is a failover program for the LVS project
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
- * 
+ *
  * Part:        logging facility.
- *  
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
- *              
+ *
  *              This program is distributed in the hope that it will be useful,
  *              but WITHOUT ANY WARRANTY; without even the implied warranty of
  *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
@@ -23,7 +23,14 @@
 #ifndef _LOGGER_H
 #define _LOGGER_H
 
+#include <stdarg.h>
+#include <syslog.h>
+
+#define	MAX_LOG_MSG	255
+
 void enable_console_log(void);
-void log_message(int priority, char* format, ...);
+void vlog_message(const int facility, const char* format, va_list args);
+void log_message(int priority, const char* format, ...)
+	__attribute__ ((format (printf, 2, 3)));
 
 #endif

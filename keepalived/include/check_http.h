@@ -43,7 +43,7 @@ typedef struct _request {
 	char				*extracted;
 	int				error;
 	int				status_code;
-	int				len;
+	size_t				len;
 	SSL				*ssl;
 	BIO				*bio;
 	MD5_CTX				context;
@@ -51,8 +51,8 @@ typedef struct _request {
 
 /* http specific thread arguments defs */
 typedef struct _http {
-	int				retry_it;	/* current number of get retry */
-	int				url_it;		/* current url checked index */
+	unsigned			retry_it;	/* current number of get retry */
+	unsigned			url_it;		/* current url checked index */
 	request_t			*req;		/* GET buffer and SSL args */
 } http_t ;
 
@@ -63,37 +63,38 @@ typedef struct _url {
 } url_t;
 
 typedef struct _http_checker {
-	int				proto;
-	struct sockaddr_storage		dst;
-	struct sockaddr_storage		bindto;
-	long				connection_to;
-	int				nb_get_retry;
-	long				delay_before_retry;
+	unsigned			proto;
+	unsigned			nb_get_retry;
+	unsigned long			delay_before_retry;
 	list				url;
 	http_t				*arg;
 } http_checker_t;
 
 /* global defs */
-#define MD5_BUFFER_LENGTH 32
-#define GET_BUFFER_LENGTH 2048
-#define MAX_BUFFER_LENGTH 4096
+#define MD5_BUFFER_LENGTH 32U
+#define GET_BUFFER_LENGTH 2048U
+#define MAX_BUFFER_LENGTH 4096U
 #define PROTO_HTTP	0x01
 #define PROTO_SSL	0x02
 
 /* GET processing command */
 #define REQUEST_TEMPLATE "GET %s HTTP/1.0\r\n" \
-                         "User-Agent:KeepAliveClient\r\n" \
-                         "Host: %s:%d\r\n\r\n"
+			 "User-Agent: KeepAliveClient\r\n" \
+			 "Host: %s%s\r\n\r\n"
+
+#define REQUEST_TEMPLATE_IPV6 "GET %s HTTP/1.0\r\n" \
+			 "User-Agent: KeepAliveClient\r\n" \
+			 "Host: [%s]%s\r\n\r\n"
+
 /* macro utility */
 #define HTTP_ARG(X) ((X)->arg)
 #define HTTP_REQ(X) ((X)->req)
+#define FMT_HTTP_RS(C) FMT_CHK(C)
 
 /* Define prototypes */
 extern void install_http_check_keyword(void);
-extern int epilog(thread_t *, int, int, int);
-extern int timeout_epilog(thread_t *, char *, char *);
-extern url_t *fetch_next_url(http_checker_t *);
-extern int http_process_response(request_t *, int);
+extern int timeout_epilog(thread_t *, const char *);
+extern void http_process_response(request_t *, size_t, bool);
 extern int http_handle_response(thread_t *, unsigned char digest[16]
 				, int);
 #endif

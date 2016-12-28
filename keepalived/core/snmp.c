@@ -20,13 +20,18 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 #include "snmp.h"
 #include "logger.h"
 #include "config.h"
 #include "global_data.h"
+#include "main.h"
+
+#include <net-snmp/agent/agent_sysORTable.h>
 
 static int
-snmp_keepalived_log(int major, int minor, void *serverarg, void *clientarg)
+snmp_keepalived_log(__attribute__((unused)) int major, __attribute__((unused)) int minor, void *serverarg, __attribute__((unused)) void *clientarg)
 {
 	struct snmp_log_message *slm = (struct snmp_log_message*)serverarg;
 	log_message(slm->priority, "%s", slm->msg);
@@ -54,7 +59,7 @@ snmp_header_list_table(struct variable *vp, oid *name, size_t *length,
 {
 	element e;
 	void *scr;
-	unsigned int target, current;
+	oid target, current;
 
 	if (header_simple_table(vp, name, length, exact, var_len, write_method, -1))
 		return NULL;
@@ -81,34 +86,39 @@ snmp_header_list_table(struct variable *vp, oid *name, size_t *length,
 		name[*length - 1] = current;
 		return scr;
 	}
-	/* No macth found at end */
+	/* No match found at end */
 	return NULL;
 }
 
-#define SNMP_KEEPALIVEDVERSION 1
-#define SNMP_ROUTERID 2
-#define SNMP_MAIL_SMTPSERVERADDRESSTYPE 3
-#define SNMP_MAIL_SMTPSERVERADDRESS 4
-#define SNMP_MAIL_SMTPSERVERTIMEOUT 5
-#define SNMP_MAIL_EMAILFROM 6
-#define SNMP_MAIL_EMAILADDRESS 7
-#define SNMP_TRAPS 8
-#define SNMP_LINKBEAT 9
+enum snmp_global_magic {
+	SNMP_KEEPALIVEDVERSION,
+	SNMP_ROUTERID,
+	SNMP_MAIL_SMTPSERVERADDRESSTYPE,
+	SNMP_MAIL_SMTPSERVERADDRESS,
+	SNMP_MAIL_SMTPSERVERTIMEOUT,
+	SNMP_MAIL_EMAILFROM,
+	SNMP_MAIL_EMAILADDRESS,
+	SNMP_TRAPS,
+	SNMP_LINKBEAT,
+	SNMP_LVSFLUSH,
+	SNMP_IPVS_64BIT_STATS,
+	SNMP_NET_NAMESPACE,
+	SNMP_DBUS,
+};
 
 static u_char*
 snmp_scalar(struct variable *vp, oid *name, size_t *length,
 		 int exact, size_t *var_len, WriteMethod **write_method)
 {
 	static unsigned long long_ret;
-	static char version[] = VERSION_STRING;
 
 	if (header_generic(vp, name, length, exact, var_len, write_method))
 		return NULL;
-	
+
 	switch (vp->magic) {
 	case SNMP_KEEPALIVEDVERSION:
-		*var_len = sizeof(version) - 2;
-		return (u_char *)version;
+		*var_len = strlen(version_string);
+		return (u_char *)version_string;
 	case SNMP_ROUTERID:
 		if (!global_data->router_id) return NULL;
 		*var_len = strlen(global_data->router_id);
@@ -140,6 +150,35 @@ snmp_scalar(struct variable *vp, oid *name, size_t *length,
 	case SNMP_LINKBEAT:
 		long_ret = global_data->linkbeat_use_polling?2:1;
 		return (u_char *)&long_ret;
+#ifdef _WITH_LVS_
+	case SNMP_LVSFLUSH:
+		long_ret = global_data->lvs_flush?1:2;
+		return (u_char *)&long_ret;
+#endif
+	case SNMP_IPVS_64BIT_STATS:
+#ifdef _WITH_LVS_64BIT_STATS_
+		long_ret = 1;
+#else
+		long_ret = 2;
+#endif
+		return (u_char *)&long_ret;
+	case SNMP_NET_NAMESPACE:
+#if HAVE_DECL_CLONE_NEWNET
+		if (network_namespace) {
+			*var_len = strlen(network_namespace);
+			return (u_char *)network_namespace;
+		}
+#endif
+		*var_len = 0;
+		return (u_char *)"";
+	case SNMP_DBUS:
+#ifdef _WITH_DBUS_
+		if (global_data->enable_dbus)
+			long_ret = 1;
+		else
+#endif
+			long_ret = 2;
+		return (u_char *)&long_ret;
 	default:
 		break;
 	}
@@ -162,10 +201,11 @@ snmp_mail(struct variable *vp, oid *name, size_t *length,
 		return (u_char *)m;
 	default:
 		break;
-        }
-        return NULL;
+	}
+	return NULL;
 }
 
+static const char global_name[] = "Keepalived";
 static oid global_oid[] = GLOBAL_OID;
 static struct variable8 global_vars[] = {
 	/* version */
@@ -183,26 +223,56 @@ static struct variable8 global_vars[] = {
 	{SNMP_TRAPS, ASN_INTEGER, RONLY, snmp_scalar, 1, {4}},
 	/* linkBeat */
 	{SNMP_LINKBEAT, ASN_INTEGER, RONLY, snmp_scalar, 1, {5}},
+	/* lvsFlush */
+	{SNMP_LVSFLUSH, ASN_INTEGER, RONLY, snmp_scalar, 1, {6}},
+#ifdef _WITH_LVS_64BIT_STATS_
+	/* LVS 64-bit stats */
+	{SNMP_IPVS_64BIT_STATS, ASN_INTEGER, RONLY, snmp_scalar, 1, {7}},
+#endif
+	{SNMP_NET_NAMESPACE, ASN_OCTET_STR, RONLY, snmp_scalar, 1, {8}},
+#ifdef _WITH_DBUS_
+	{SNMP_DBUS, ASN_INTEGER, RONLY, snmp_scalar, 1, {9}},
+#endif
 };
 
 static int
-snmp_setup_session_cb(int majorID, int minorID,
-		      void *serverarg, void *clientarg)
+snmp_setup_session_cb(__attribute__((unused)) int majorID, __attribute__((unused)) int minorID,
+		      void *serverarg, __attribute__((unused)) void *clientarg)
 {
 	netsnmp_session *sess = serverarg;
 	if (serverarg == NULL)
 		return 0;
-	/* Because ping are done synchronously, we do everything to
-	   avoid to block too long. Better disconnect from the master
-	   agent than waiting for him... */
+	/*
+	 * Because ping are done synchronously, we do everything to
+	 * avoid to block too long. Better disconnect from the master
+	 * agent than waiting for him...
+	 */
 	sess->timeout = ONE_SEC / 3;
 	sess->retries = 0;
 	return 0;
 }
 
+void snmp_register_mib(oid *myoid, size_t len, const char *name,
+		       struct variable *variables, size_t varsize, size_t varlen)
+{
+	char name_buf[80];
+
+	if (register_mib(name, (struct variable *) variables, varsize,
+			 varlen, myoid, len) != MIB_REGISTERED_OK)
+		log_message(LOG_WARNING, "Unable to register %s MIB", name);
+
+	snprintf(name_buf, sizeof(name_buf), "The MIB module for %s", name);
+	register_sysORTable(myoid, len, name_buf);
+}
+
 void
-snmp_agent_init(oid *myoid, int len, char *name, struct variable *variables,
-		int varsize, int varlen)
+snmp_unregister_mib(oid *myoid, size_t len)
+{
+	unregister_sysORTable(myoid, len);
+}
+
+void
+snmp_agent_init(const char *snmp_socket, bool base_mib)
 {
 	log_message(LOG_INFO, "Starting SNMP subagent");
 	netsnmp_enable_subagent();
@@ -218,33 +288,39 @@ snmp_agent_init(oid *myoid, int len, char *name, struct variable *variables,
 	    NETSNMP_DS_LIB_DONT_PERSIST_STATE, TRUE);
 	/* Do not load any MIB */
 	setenv("MIBS", "", 1);
-	/* We also register a callback to modify default timeout and
-	   retries value. */
+	/*
+	 * We also register a callback to modify default timeout and
+	 * retries value.
+	 */
 	snmp_register_callback(SNMP_CALLBACK_LIBRARY,
 			       SNMP_CALLBACK_SESSION_INIT,
 			       snmp_setup_session_cb, NULL);
-
-	init_agent(name);
-	/* Ping AgentX less often than every 15 seconds: pinging can
-	   block keepalived. We check every 2 minutes. */
+	/* Specify the socket to master agent, if provided */
+	if (snmp_socket != NULL) {
+		netsnmp_ds_set_string(NETSNMP_DS_APPLICATION_ID,
+				      NETSNMP_DS_AGENT_X_SOCKET,
+				      snmp_socket);
+	}
+	/*
+	 * Ping AgentX less often than every 15 seconds: pinging can
+	 * block keepalived. We check every 2 minutes.
+	 */
 	netsnmp_ds_set_int(NETSNMP_DS_APPLICATION_ID,
 			   NETSNMP_DS_AGENT_AGENTX_PING_INTERVAL, 120);
-	if (register_mib(name, (struct variable *) variables, varsize,
-			 varlen, myoid, len) != MIB_REGISTERED_OK)
-		log_message(LOG_WARNING, "Unable to register MIB");
-	register_mib("Keepalived", (struct variable *) global_vars,
-		     sizeof(struct variable8),
-		     sizeof(global_vars)/sizeof(struct variable8),
-		     global_oid, OID_LENGTH(global_oid));
-	init_snmp(name);
 
-	register_sysORTable(global_oid, OID_LENGTH(global_oid) - 1,
-			    "The MIB module for Keepalived");
+	init_agent(global_name);
+	if (base_mib)
+		snmp_register_mib(global_oid, OID_LENGTH(global_oid), global_name,
+				  (struct variable *)global_vars,
+				  sizeof(struct variable8),
+				  sizeof(global_vars)/sizeof(struct variable8));
+	init_snmp(global_name);
 }
 
 void
-snmp_agent_close(oid *myoid, int len, char *name)
+snmp_agent_close(bool base_mib)
 {
-	unregister_sysORTable(myoid, len);
-	snmp_shutdown(name);
+	if (base_mib)
+		snmp_unregister_mib(global_oid, OID_LENGTH(global_oid));
+	snmp_shutdown(global_name);
 }

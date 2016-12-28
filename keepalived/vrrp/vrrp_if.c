@@ -20,14 +20,16 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 /* global include */
 #include <unistd.h>
 #include <string.h>
-#include <sys/types.h>
-typedef __uint64_t u64;
-typedef __uint32_t u32;
-typedef __uint16_t u16;
-typedef __uint8_t u8;
+#include <stdint.h>
+typedef uint64_t u64;
+typedef uint32_t u32;
+typedef uint16_t u16;
+typedef uint8_t u8;
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <netinet/in.h>
@@ -35,14 +37,13 @@ typedef __uint8_t u8;
 #include <fcntl.h>
 #include <syslog.h>
 #include <ctype.h>
-#ifdef use_linux_libc5
-#include <linux/if_arp.h>
-#include <linux/if_ether.h>
-#endif
+#include <linux/ip.h>
 #include <stdlib.h>
 #include <stdio.h>
-#ifdef _KRNL_2_4_
 #include <linux/ethtool.h>
+#include <linux/mii.h>
+#if !HAVE_DECL_SOCK_CLOEXEC
+#include "old_socket.h"
 #endif
 
 /* local include */
@@ -56,14 +57,20 @@ typedef __uint8_t u8;
 #include "utils.h"
 #include "logger.h"
 
-/* Global vars */
+/* Local vars */
 static list if_queue;
 static struct ifreq ifr;
+
+static list old_if_queue;
+static list old_garp_delay;
+
+/* Global vars */
+list garp_delay;
 
 /* Helper functions */
 /* Return interface from interface index */
 interface_t *
-if_get_by_ifindex(const int ifindex)
+if_get_by_ifindex(ifindex_t ifindex)
 {
 	interface_t *ifp;
 	element e;
@@ -79,107 +86,163 @@ if_get_by_ifindex(const int ifindex)
 	return NULL;
 }
 
+/* Return base interface from interface index incase of VMAC */
+interface_t *
+base_if_get_by_ifindex(ifindex_t ifindex)
+{
+	interface_t *ifp = if_get_by_ifindex(ifindex);
+
+#ifdef _HAVE_VRRP_VMAC_
+	return (ifp && ifp->vmac) ? if_get_by_ifindex(ifp->base_ifindex) : ifp;
+#else
+	return ifp;
+#endif
+}
+
+/* Return base interface from interface index incase of VMAC */
+interface_t *
+base_if_get_by_ifp(interface_t *ifp)
+{
+#ifdef _HAVE_VRRP_VMAC_
+	return (ifp && ifp->vmac) ? if_get_by_ifindex(ifp->base_ifindex) : ifp;
+#else
+	return ifp;
+#endif
+}
+
 interface_t *
 if_get_by_ifname(const char *ifname)
 {
 	interface_t *ifp;
 	element e;
 
-	if (LIST_ISEMPTY(if_queue)) {
-		log_message(LOG_ERR, "Interface queue is empty");
+	if (LIST_ISEMPTY(if_queue))
 		return NULL;
-	}
 
 	for (e = LIST_HEAD(if_queue); e; ELEMENT_NEXT(e)) {
 		ifp = ELEMENT_DATA(e);
 		if (!strcmp(ifp->ifname, ifname))
 			return ifp;
 	}
-
-	log_message(LOG_ERR, "No such interface, %s", ifname);
 	return NULL;
 }
 
-/* MII Transceiver Registers poller functions */
-static int
-if_mii_read(const int fd, const int phy_id, int location)
+/* Return the interface list itself */
+list
+get_if_list(void)
 {
-	uint16_t *data = (uint16_t *) (&ifr.ifr_data);
+	return if_queue;
+}
 
-	data[0] = phy_id;
-	data[1] = location;
+void
+reset_interface_queue(void)
+{
+	old_if_queue = if_queue;
+	old_garp_delay = garp_delay;
+
+	if_queue = NULL;
+	garp_delay = NULL;
+}
+
+#ifdef _HAVE_VRRP_VMAC_
+/*
+ * Reflect base interface flags on VMAC interfaces.
+ * VMAC interfaces should never update it own flags, only be reflected
+ * by the base interface flags.
+ */
+void
+if_vmac_reflect_flags(ifindex_t ifindex, unsigned long flags)
+{
+	interface_t *ifp;
+	element e;
+
+	if (LIST_ISEMPTY(if_queue) || !ifindex)
+		return;
+
+	for (e = LIST_HEAD(if_queue); e; ELEMENT_NEXT(e)) {
+		ifp = ELEMENT_DATA(e);
+		if (ifp->vmac && ifp->base_ifindex == ifindex)
+			ifp->flags = flags;
+	}
+}
+#endif
+
+/* MII Transceiver Registers poller functions */
+static uint16_t
+if_mii_read(int fd, uint16_t phy_id, uint16_t reg_num)
+{
+	struct mii_ioctl_data *data = (struct mii_ioctl_data *)&ifr.ifr_data;
+
+	data->phy_id = phy_id;
+	data->reg_num = reg_num;
 
 	if (ioctl(fd, SIOCGMIIREG, &ifr) < 0) {
-		log_message(LOG_ERR, "SIOCGMIIREG on %s failed: %s", ifr.ifr_name,
-		       strerror(errno));
-		return -1;
+		log_message(LOG_ERR, "SIOCGMIIREG on %s failed: %s", ifr.ifr_name, strerror(errno));
+		return 0xffff;
 	}
-	return data[3];
+	return data->val_out;
 }
 
-/*
-static void if_mii_dump(const uint16_t mii_regs[32], unsigned phy_id)
+#ifdef _INCLUDE_UNUSED_CODE_
+static void if_mii_dump(const uint16_t *mii_regs, size_t num_regs unsigned phy_id)
 {
-  int mii_reg;
+	int mii_reg;
 
-  printf(" MII PHY #%d transceiver registers:\n", phy_id);
-  for (mii_reg = 0; mii_reg < 32; mii_reg++)
-    printf("%s %4.4x", (mii_reg % 8) == 0 ? "\n ":"", mii_regs[mii_reg]);
+	printf(" MII PHY #%d transceiver registers:", phy_id);
+	for (mii_reg = 0; mii_reg < num_regs; mii_reg++)
+		printf("%s %4.4x", (mii_reg % 8) == 0 ? "\n ":"", mii_regs[mii_reg]);
+	printf("\n");
 }
-*/
+#endif
 
 static int
 if_mii_status(const int fd)
 {
-	uint16_t *data = (uint16_t *) (&ifr.ifr_data);
-	unsigned phy_id = data[0];
-	uint16_t mii_regs[32];
-	int mii_reg;
+	struct mii_ioctl_data *data = (struct mii_ioctl_data *)&ifr.ifr_data;
+	uint16_t phy_id = data->phy_id;
 	uint16_t bmsr, new_bmsr;
 
-	/* Reset MII registers */
-	memset(mii_regs, 0, sizeof (mii_regs));
-
-	for (mii_reg = 0; mii_reg < 32; mii_reg++)
-		mii_regs[mii_reg] = if_mii_read(fd, phy_id, mii_reg);
-
-// if_mii_dump(mii_regs, phy_id);
-
-	if (mii_regs[0] == 0xffff) {
-		log_message(LOG_ERR, "No MII transceiver present for %s !!!",
-		       ifr.ifr_name);
+	if (if_mii_read(fd, phy_id, MII_BMCR) == 0xffff ||
+	    (bmsr = if_mii_read(fd, phy_id, MII_BMSR)) == 0) {
+		log_message(LOG_ERR, "No MII transceiver present for %s !!!", ifr.ifr_name);
 		return -1;
 	}
 
-	bmsr = mii_regs[1];
+// if_mii_dump(mii_regs, sizeof(mii_regs)/ sizeof(mii_regs[0], phy_id);
 
 	/*
 	 * For Basic Mode Status Register (BMSR).
 	 * Sticky field (Link established & Jabber detected), we need to read
 	 * a second time the BMSR to get current status.
 	 */
-	new_bmsr = if_mii_read(fd, phy_id, 1);
+	new_bmsr = if_mii_read(fd, phy_id, MII_BMSR);
 
 // printf(" \nBasic Mode Status Register 0x%4.4x ... 0x%4.4x\n", bmsr, new_bmsr);
 
-	if (bmsr & 0x0004)
+	if (bmsr & BMSR_LSTATUS)
 		return LINK_UP;
-	else if (new_bmsr & 0x0004)
+	else if (new_bmsr & BMSR_LSTATUS)
 		return LINK_UP;
 	else
 		return LINK_DOWN;
 }
 
-int
+static int
 if_mii_probe(const char *ifname)
 {
-	uint16_t *data = (uint16_t *) (&ifr.ifr_data);
-	int phy_id;
-	int fd = socket(AF_INET, SOCK_DGRAM, 0);
-	int status = 0;
+	struct mii_ioctl_data *data = (struct mii_ioctl_data *)&ifr.ifr_data;
+	uint16_t phy_id;
+	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	int status;
 
 	if (fd < 0)
 		return -1;
+
+#if !HAVE_DECL_SOCK_CLOEXEC
+	if (set_sock_flags(fd, F_SETFD, FD_CLOEXEC))
+		log_message(LOG_INFO, "Unable to set CLOEXEC on mii_probe socket - %s (%d)", strerror(errno), errno);
+#endif
+
 	memset(&ifr, 0, sizeof (struct ifreq));
 	strncpy(ifr.ifr_name, ifname, sizeof (ifr.ifr_name));
 	if (ioctl(fd, SIOCGMIIPHY, &ifr) < 0) {
@@ -190,13 +253,13 @@ if_mii_probe(const char *ifname)
 	/* check if the driver reports BMSR using the MII interface, as we
 	 * will need this and we already know that some don't support it.
 	 */
-	phy_id = data[0]; /* save it in case it is overwritten */
-	data[1] = 1;
+	phy_id = data->phy_id; /* save it in case it is overwritten */
+	data->reg_num = MII_BMSR;
 	if (ioctl(fd, SIOCGMIIREG, &ifr) < 0) {
 		close(fd);
 		return -1;
 	}
-	data[0] = phy_id;
+	data->phy_id = phy_id;
 
 	/* Dump the MII transceiver */
 	status = if_mii_status(fd);
@@ -207,28 +270,29 @@ if_mii_probe(const char *ifname)
 static int
 if_ethtool_status(const int fd)
 {
-#ifdef ETHTOOL_GLINK
 	struct ethtool_value edata;
-	int err = 0;
 
 	edata.cmd = ETHTOOL_GLINK;
 	ifr.ifr_data = (caddr_t) & edata;
-	err = ioctl(fd, SIOCETHTOOL, &ifr);
-	if (err == 0)
+	if (!ioctl(fd, SIOCETHTOOL, &ifr))
 		return (edata.data) ? 1 : 0;
-	else
-#endif
-		return -1;
+	return -1;
 }
 
-int
+static int
 if_ethtool_probe(const char *ifname)
 {
-	int fd = socket(AF_INET, SOCK_DGRAM, 0);
-	int status = 0;
+	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	int status;
 
 	if (fd < 0)
 		return -1;
+
+#if !HAVE_DECL_SOCK_CLOEXEC
+	if (set_sock_flags(fd, F_SETFD, FD_CLOEXEC))
+		log_message(LOG_INFO, "Unable to set CLOEXEC on ethtool_probe socket - %s (%d)", strerror(errno), errno);
+#endif
+
 	memset(&ifr, 0, sizeof (struct ifreq));
 	strncpy(ifr.ifr_name, ifname, sizeof (ifr.ifr_name));
 
@@ -237,20 +301,26 @@ if_ethtool_probe(const char *ifname)
 	return status;
 }
 
-void
+static void
 if_ioctl_flags(interface_t * ifp)
 {
-	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 
 	if (fd < 0)
 		return;
+
+#if !HAVE_DECL_SOCK_CLOEXEC
+	if (set_sock_flags(fd, F_SETFD, FD_CLOEXEC))
+		log_message(LOG_INFO, "Unable to set CLOEXEC on ioctl_flags socket - %s (%d)", strerror(errno), errno);
+#endif
+
 	memset(&ifr, 0, sizeof (struct ifreq));
 	strncpy(ifr.ifr_name, ifp->ifname, sizeof (ifr.ifr_name));
 	if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0) {
 		close(fd);
 		return;
 	}
-	ifp->flags = ifr.ifr_flags;
+	ifp->flags = (unsigned short)ifr.ifr_flags;
 	close(fd);
 }
 
@@ -261,20 +331,69 @@ free_if(void *data)
 	FREE(data);
 }
 
+/* garp_delay facility function */
 void
+alloc_garp_delay(void)
+{
+	if (!LIST_EXISTS(garp_delay))
+		garp_delay = alloc_list(NULL, NULL);
+
+	list_add(garp_delay, MALLOC(sizeof(garp_delay_t)));
+}
+	
+void
+set_default_garp_delay(void)
+{
+	garp_delay_t default_delay;
+	element e;
+	interface_t *ifp;
+	garp_delay_t *delay;
+
+	if (global_data->vrrp_garp_interval) {
+		default_delay.garp_interval.tv_sec = global_data->vrrp_garp_interval / 1000000;
+		default_delay.garp_interval.tv_usec = global_data->vrrp_garp_interval % 1000000;
+		default_delay.have_garp_interval = true;
+	}
+	if (global_data->vrrp_gna_interval) {
+		default_delay.gna_interval.tv_sec = global_data->vrrp_gna_interval / 1000000;
+		default_delay.gna_interval.tv_usec = global_data->vrrp_gna_interval % 1000000;
+		default_delay.have_gna_interval = true;
+	}
+
+	/* Allocate a delay structure to each physical inteface that doesn't have one */
+	for (e = LIST_HEAD(if_queue); e; ELEMENT_NEXT(e)) {
+		ifp = ELEMENT_DATA(e);
+		if (!ifp->garp_delay
+#ifdef _HAVE_VRRP_VMAC_
+				     && !ifp->vmac
+#endif
+						  )
+		{
+			alloc_garp_delay();
+			delay = LIST_TAIL_DATA(garp_delay);
+			*delay = default_delay;
+			ifp->garp_delay = delay;
+		}
+	}
+}
+
+static void
 dump_if(void *data)
 {
 	interface_t *ifp = data;
-	char addr_str[41];
+#ifdef _HAVE_VRRP_VMAC_
+	interface_t *ifp_u;
+#endif
+	char addr_str[INET6_ADDRSTRLEN];
 
 	log_message(LOG_INFO, "------< NIC >------");
 	log_message(LOG_INFO, " Name = %s", ifp->ifname);
-	log_message(LOG_INFO, " index = %d", ifp->ifindex);
+	log_message(LOG_INFO, " index = %u", ifp->ifindex);
 	log_message(LOG_INFO, " IPv4 address = %s", inet_ntop2(ifp->sin_addr.s_addr));
-	inet_ntop(AF_INET6, &ifp->sin6_addr, addr_str, 41);
+	inet_ntop(AF_INET6, &ifp->sin6_addr, addr_str, sizeof(addr_str));
 	log_message(LOG_INFO, " IPv6 address = %s", addr_str);
 
-	/* FIXME: Harcoded for ethernet */
+	/* FIXME: Hardcoded for ethernet */
 	if (ifp->hw_type == ARPHRD_ETHER)
 		log_message(LOG_INFO, " MAC = %.2x:%.2x:%.2x:%.2x:%.2x:%.2x",
 		       ifp->hw_addr[0], ifp->hw_addr[1], ifp->hw_addr[2]
@@ -303,13 +422,34 @@ dump_if(void *data)
 		break;
 	}
 
-	/* MII channel supported ? */
-	if (IF_MII_SUPPORTED(ifp))
-		log_message(LOG_INFO, " NIC support MII regs");
-	else if (IF_ETHTOOL_SUPPORTED(ifp))
-		log_message(LOG_INFO, " NIC support EHTTOOL GLINK interface");
-	else
-		log_message(LOG_INFO, " Enabling NIC ioctl refresh polling");
+#ifdef _HAVE_VRRP_VMAC_
+	if (ifp->vmac && (ifp_u = if_get_by_ifindex(ifp->base_ifindex)))
+		log_message(LOG_INFO, " VMAC underlying interface = %s", ifp_u->ifname);
+#endif
+
+	if (global_data->linkbeat_use_polling) {
+		/* MII channel supported ? */
+		if (IF_MII_SUPPORTED(ifp))
+			log_message(LOG_INFO, " NIC support MII regs");
+		else if (IF_ETHTOOL_SUPPORTED(ifp))
+			log_message(LOG_INFO, " NIC support ETHTOOL GLINK interface");
+		else
+			log_message(LOG_INFO, " NIC ioctl refresh polling");
+	}
+
+	if (ifp->garp_delay) {
+		if (ifp->garp_delay->have_garp_interval)
+			log_message(LOG_INFO, " Gratuitous ARP interval %ldms",
+				    ifp->garp_delay->garp_interval.tv_sec * 100 +
+				     ifp->garp_delay->garp_interval.tv_usec / (TIMER_HZ / 100));
+
+		if (ifp->garp_delay->have_gna_interval)
+			log_message(LOG_INFO, " Gratuitous NA interval %ldms",
+				    ifp->garp_delay->gna_interval.tv_sec * 100 +
+				     ifp->garp_delay->gna_interval.tv_usec / (TIMER_HZ / 100));
+		if (ifp->garp_delay->aggregation_group)
+			log_message(LOG_INFO, " Gratuitous ARP aggregation group %d", ifp->garp_delay->aggregation_group);
+	}
 }
 
 static void
@@ -360,15 +500,14 @@ init_if_linkbeat(void)
 		status = if_mii_probe(ifp->ifname);
 		if (status >= 0) {
 			ifp->lb_type = LB_MII;
-			ifp->linkbeat = (status) ? 1 : 0;
+			ifp->linkbeat = !!status;
 		} else {
 			status = if_ethtool_probe(ifp->ifname);
 			if (status >= 0) {
 				ifp->lb_type = LB_ETHTOOL;
-				ifp->linkbeat = (status) ? 1 : 0;
+				ifp->linkbeat = !!status;
 			}
 		}
-
 		/* Register new monitor thread */
 		thread_add_timer(master, if_linkbeat_refresh_thread, ifp, POLLING_DELAY);
 	}
@@ -390,25 +529,30 @@ if_linkbeat(const interface_t * ifp)
 void
 free_interface_queue(void)
 {
-	if (!LIST_ISEMPTY(if_queue))
-		free_list(if_queue);
-	if_queue = NULL;
-	kernel_netlink_close();
+	free_list(&if_queue);
+	free_list(&garp_delay);
+}
+
+void
+free_old_interface_queue(void)
+{
+	free_list(&old_if_queue);
+	free_list(&old_garp_delay);
 }
 
 void
 init_interface_queue(void)
 {
 	init_if_queue();
-//	dump_list(if_queue);
 	netlink_interface_lookup();
+//	dump_list(if_queue);
 }
 
 void
 init_interface_linkbeat(void)
 {
 	if (global_data->linkbeat_use_polling) {
-		log_message(LOG_INFO, "Using MII-BMSR NIC polling thread...");
+		log_message(LOG_INFO, "Using MII-BMSR/ETHTOOL NIC polling thread...");
 		init_if_linkbeat();
 	} else {
 		log_message(LOG_INFO, "Using LinkWatch kernel netlink reflector...");
@@ -416,7 +560,7 @@ init_interface_linkbeat(void)
 }
 
 int
-if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp, int proto)
+if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp)
 {
 	struct ip_mreqn imr;
 	struct ipv6_mreq imr6;
@@ -433,30 +577,28 @@ if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp, int proto)
 
 	if (family == AF_INET) {
 		memset(&imr, 0, sizeof(imr));
-		imr.imr_multiaddr.s_addr = htonl(INADDR_VRRP_GROUP);
-		imr.imr_address.s_addr = IF_ADDR(ifp);
-		imr.imr_ifindex = IF_INDEX(ifp);
+		imr.imr_multiaddr = ((struct sockaddr_in *) &global_data->vrrp_mcast_group4)->sin_addr;
+		imr.imr_ifindex = (int)IF_INDEX(ifp);
 
 		/* -> Need to handle multicast convergance after takeover.
 		 * We retry until multicast is available on the interface.
 		 */
 		ret = setsockopt(*sd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
-				 (char *) &imr, sizeof(struct ip_mreqn));
+				 (char *) &imr, (socklen_t)sizeof(struct ip_mreqn));
 	} else {
 		memset(&imr6, 0, sizeof(imr6));
-		imr6.ipv6mr_multiaddr.s6_addr16[0] = htons(0xff02);
-		imr6.ipv6mr_multiaddr.s6_addr16[7] = htons(0x12);
+		imr6.ipv6mr_multiaddr = ((struct sockaddr_in6 *) &global_data->vrrp_mcast_group6)->sin6_addr;
 		imr6.ipv6mr_interface = IF_INDEX(ifp);
 		ret = setsockopt(*sd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP,
-				 (char *) &imr6, sizeof(struct ipv6_mreq));
+				 (char *) &imr6, (socklen_t)sizeof(struct ipv6_mreq));
 	}
 
 	if (ret < 0) {
-		log_message(LOG_INFO, "cant do IP%s_ADD_MEMBERSHIP errno=%s (%d)",
-			    (family == AF_INET) ? "" : "V6", strerror(errno), errno);
+		log_message(LOG_INFO, "(%s): cant do IP%s_ADD_MEMBERSHIP errno=%s (%d)",
+			    ifp->ifname, (family == AF_INET) ? "" : "V6", strerror(errno), errno);
 		close(*sd);
 		*sd = -1;
-        }
+	}
 
 	return *sd;
 }
@@ -475,33 +617,24 @@ if_leave_vrrp_group(sa_family_t family, int sd, interface_t *ifp)
 	/* Leaving the VRRP multicast group */
 	if (family == AF_INET) {
 		memset(&imr, 0, sizeof(imr));
-		/* FIXME: change this to use struct ip_mreq */
-		imr.imr_multiaddr.s_addr = htonl(INADDR_VRRP_GROUP);
-		imr.imr_address.s_addr = IF_ADDR(ifp);
-		imr.imr_ifindex = IF_INDEX(ifp);
+		imr.imr_multiaddr = ((struct sockaddr_in *) &global_data->vrrp_mcast_group4)->sin_addr;
+		imr.imr_ifindex = (int)IF_INDEX(ifp);
 		ret = setsockopt(sd, IPPROTO_IP, IP_DROP_MEMBERSHIP,
-				 (char *) &imr, sizeof (struct ip_mreqn));
+				 (char *) &imr, sizeof(imr));
 	} else {
 		memset(&imr6, 0, sizeof(imr6));
-		/* rfc5798.5.1.2.2 : destination IPv6 mcast group is
-		 * ff02:0:0:0:0:0:0:12.
-		 */
-		imr6.ipv6mr_multiaddr.s6_addr16[0] = htons(0xff02);
-		imr6.ipv6mr_multiaddr.s6_addr16[7] = htons(0x12);
+		imr6.ipv6mr_multiaddr = ((struct sockaddr_in6 *) &global_data->vrrp_mcast_group6)->sin6_addr;
 		imr6.ipv6mr_interface = IF_INDEX(ifp);
 		ret = setsockopt(sd, IPPROTO_IPV6, IPV6_DROP_MEMBERSHIP,
 				 (char *) &imr6, sizeof(struct ipv6_mreq));
 	}
 
 	if (ret < 0) {
-		log_message(LOG_INFO, "cant do IP%s_DROP_MEMBERSHIP errno=%s (%d)",
-			    (family == AF_INET) ? "" : "V6", strerror(errno), errno);
-		close(sd);
+		log_message(LOG_INFO, "(%s): cant do IP%s_DROP_MEMBERSHIP errno=%s (%d)",
+			    ifp->ifname, (family == AF_INET) ? "" : "V6", strerror(errno), errno);
 		return -1;
 	}
 
-	/* Finally close the desc */
-	close(sd);
 	return 0;
 }
 
@@ -522,7 +655,7 @@ if_setsockopt_bindtodevice(int *sd, interface_t *ifp)
 	 * -- If you read this !!! and know the answer to the question
 	 *    please feel free to answer me ! :)
 	 */
-	ret = setsockopt(*sd, SOL_SOCKET, SO_BINDTODEVICE, IF_NAME(ifp), strlen(IF_NAME(ifp)) + 1);
+	ret = setsockopt(*sd, SOL_SOCKET, SO_BINDTODEVICE, IF_NAME(ifp), (socklen_t)strlen(IF_NAME(ifp)) + 1);
 	if (ret < 0) {
 		log_message(LOG_INFO, "cant bind to device %s. errno=%d. (try to run it as root)",
 			    IF_NAME(ifp), errno);
@@ -554,6 +687,57 @@ if_setsockopt_hdrincl(int *sd)
 }
 
 int
+if_setsockopt_ipv6_checksum(int *sd)
+{
+	int ret;
+	int offset = 6;
+
+	if (!sd && *sd < 0)
+		return -1;
+
+	ret = setsockopt(*sd, IPPROTO_IPV6, IPV6_CHECKSUM, &offset, sizeof(offset));
+	if (ret < 0) {
+		log_message(LOG_INFO, "cant set IPV6_CHECKSUM IP option. errno=%d (%m)", errno);
+		close(*sd);
+		*sd = -1;
+	}
+
+	return *sd;
+}
+
+
+int
+if_setsockopt_mcast_all(sa_family_t family, int *sd)
+{
+#ifndef IP_MULTICAST_ALL	/* Since Linux 2.6.31 */
+	/* It seems reasonable to just skip the calls to if_setsockopt_mcast_all
+	 * if there is no support for that feature in header files */
+	return -1;
+#else
+	int ret;
+	unsigned char no = 0;
+
+	if (*sd < 0)
+		return -1;
+
+	if (family == AF_INET6)
+		return *sd;
+
+	/* Don't accept multicast packets we haven't requested */
+	ret = setsockopt(*sd, IPPROTO_IP, IP_MULTICAST_ALL, &no, sizeof(no));
+
+	if (ret < 0) {
+		log_message(LOG_INFO, "cant set IP_MULTICAST_ALL IP option. errno=%d (%m)",
+			    errno);
+		close(*sd);
+		*sd = -1;
+	}
+
+	return *sd;
+#endif
+}
+
+int
 if_setsockopt_mcast_loop(sa_family_t family, int *sd)
 {
 	int ret;
@@ -563,7 +747,7 @@ if_setsockopt_mcast_loop(sa_family_t family, int *sd)
 	if (*sd < 0)
 		return -1;
 
-	/* Include IP header into RAW protocol packet */
+	/* Set Multicast loop */
 	if (family == AF_INET)
 		ret = setsockopt(*sd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
 	else
@@ -589,7 +773,7 @@ if_setsockopt_mcast_hops(sa_family_t family, int *sd)
 	if (*sd < 0 || family == AF_INET)
 		return -1;
 
-	/* Include IP header into RAW protocol packet */
+	/* Set HOP limit */
 	ret = setsockopt(*sd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops));
 	if (ret < 0) {
 		log_message(LOG_INFO, "cant set IPV6_MULTICAST_HOPS IP option. errno=%d (%m)", errno);
@@ -604,17 +788,29 @@ int
 if_setsockopt_mcast_if(sa_family_t family, int *sd, interface_t *ifp)
 {
 	int ret;
-	unsigned int ifindex;
+	ifindex_t ifindex;
+	int int_ifindex;
 
-	/* Not applicable for IPv4 */
-	if (*sd < 0 || family == AF_INET)
+	if (*sd < 0)
 		return -1;
 
-	/* Include IP header into RAW protocol packet */
+	/* Set interface for sending outbound datagrams */
 	ifindex = IF_INDEX(ifp);
-	ret = setsockopt(*sd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &ifindex, sizeof(ifindex));
+	if ( family == AF_INET)
+	{
+		struct ip_mreqn imr;
+
+		memset(&imr, 0, sizeof(imr));
+		imr.imr_ifindex = (int)IF_INDEX(ifp);
+		ret = setsockopt(*sd, IPPROTO_IP, IP_MULTICAST_IF, &imr, sizeof(imr));
+	}
+	else {
+		int_ifindex = (int)ifindex;
+		ret = setsockopt(*sd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &int_ifindex, sizeof(int_ifindex));
+	}
+
 	if (ret < 0) {
-		log_message(LOG_INFO, "cant set IPV6_MULTICAST_IF IP option. errno=%d (%m)", errno);
+		log_message(LOG_INFO, "cant set IP%s_MULTICAST_IF IP option. errno=%d (%m)", (family == AF_INET) ? "" : "V6", errno);
 		close(*sd);
 		*sd = -1;
 	}
@@ -622,17 +818,47 @@ if_setsockopt_mcast_if(sa_family_t family, int *sd, interface_t *ifp)
 	return *sd;
 }
 
-int if_setsockopt_priority(int *sd) {
+int
+if_setsockopt_priority(int *sd, int family)
+{
 	int ret;
-	int priority = 6;
+	int val;
 
 	if (*sd < 0)
 		return -1;
 
-	/* Set SO_PRIORITY for VRRP traffic */
-	ret = setsockopt(*sd, SOL_SOCKET, SO_PRIORITY, &priority, sizeof(priority));
+	/* Set PRIORITY for VRRP traffic */
+	if (family == AF_INET) {
+		val = IPTOS_PREC_INTERNETCONTROL;
+		ret = setsockopt(*sd, IPPROTO_IP, IP_TOS, &val, sizeof(val));
+	}
+	else {
+		/* set tos to internet network control */
+		val = 0xc0;	/* 192, which translates to DCSP value 48, or cs6 */
+		ret = setsockopt(*sd, IPPROTO_IPV6, IPV6_TCLASS, &val, sizeof(val));
+	}
+
 	if (ret < 0) {
-		log_message(LOG_INFO, "cant set SO_PRIORITY IP option. errno=%d (%m)", errno);
+		log_message(LOG_INFO, "can't set %s option. errno=%d (%m)", (family == AF_INET) ? "IP_TOS" : "IPV6_TCLASS",  errno);
+		close(*sd);
+		*sd = -1;
+	}
+
+	return *sd;
+}
+
+int
+if_setsockopt_rcvbuf(int *sd, int val)
+{
+	int ret;
+
+	if (*sd < 0)
+		return -1;
+
+	/* rcvbuf option */
+	ret = setsockopt(*sd, SOL_SOCKET, SO_RCVBUF, &val, sizeof(val));
+	if (ret < 0) {
+		log_message(LOG_INFO, "cant set SO_RCVBUF IP option. errno=%d (%m)", errno);
 		close(*sd);
 		*sd = -1;
 	}

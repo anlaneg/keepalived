@@ -25,48 +25,45 @@
 #define _MEMORY_H
 
 /* system includes */
-#include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
-#include <assert.h>
-
-/* extern types */
-extern unsigned long mem_allocated;
-extern void *xalloc(unsigned long size);
-extern void *zalloc(unsigned long size);
-extern void xfree(void *p);
-
-/* Global alloc macro */
-#define ALLOC(n) (xalloc(n))
+#include <stdbool.h>
 
 /* Local defines */
-#ifdef _DEBUG_
+#ifdef _MEM_CHECK_
 
 #define MAX_ALLOC_LIST 2048
 
 #define MALLOC(n)    ( keepalived_malloc((n), \
-                      (__FILE__), (char *)(__FUNCTION__), (__LINE__)) )
+		      (__FILE__), (char *)(__FUNCTION__), (__LINE__)) )
 #define FREE(b)      ( keepalived_free((b), \
-                      (__FILE__), (char *)(__FUNCTION__), (__LINE__)) )
+		      (__FILE__), (char *)(__FUNCTION__), (__LINE__)), \
+		       (b) = NULL )
 #define REALLOC(b,n) ( keepalived_realloc((b), (n), \
-                      (__FILE__), (char *)(__FUNCTION__), (__LINE__)) )
+		      (__FILE__), (char *)(__FUNCTION__), (__LINE__)) )
+
+extern size_t mem_allocated;
 
 /* Memory debug prototypes defs */
-extern char *keepalived_malloc(unsigned long, char *, char *, int);
+extern void *keepalived_malloc(size_t, char *, char *, int)
+		__attribute__((alloc_size(1))) __attribute__((malloc));
 extern int keepalived_free(void *, char *, char *, int);
-extern void *keepalived_realloc(void *, unsigned long, char *, char *, int);
-extern void keepalived_free_final(char *);
+extern void *keepalived_realloc(void *, size_t, char *, char *, int)
+		__attribute__((alloc_size(2)));
+
+extern void mem_log_init(const char *, const char *);
+extern void skip_mem_dump(void);
+extern void enable_mem_log_termination(void);
 
 #else
 
+extern void *zalloc(unsigned long size);
+
 #define MALLOC(n)    (zalloc(n))
-#define FREE(p)      (xfree(p))
+#define FREE(p)      (free(p), (p) = NULL)
 #define REALLOC(p,n) (realloc((p),(n)))
 
 #endif
 
 /* Common defines */
-#define FREE_PTR(P) if((P)) FREE((P));
-
+#define FREE_PTR(p)	{ if (p) { FREE(p);} }
 #endif

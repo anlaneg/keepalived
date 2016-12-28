@@ -1,10 +1,10 @@
-/* 
+/*
  * Soft:        Keepalived is a failover program for the LVS project
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
- * 
+ *
  * Part:        vector.c include file.
- *  
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
  *
  *              This program is distributed in the hope that it will be useful,
@@ -23,6 +23,9 @@
 #ifndef _VECTOR_H
 #define _VECTOR_H
 
+#include <stdio.h>
+#include <stdbool.h>
+
 /* vector definition */
 typedef struct _vector {
 	unsigned int	active;
@@ -30,37 +33,32 @@ typedef struct _vector {
 	void		**slot;
 } vector_t;
 
+typedef char *(*null_strvec_handler_t)(const vector_t *, size_t);
+
 /* Some defines */
 #define VECTOR_DEFAULT_SIZE 1
 
-/* Some usefull macros */
-#define vector_slot(V,E) ((V)->slot[(E)])
+/* Some useful macros */
 #define vector_size(V)   ((V)->allocated)
+#define vector_slot(V,E) ((V)->slot[(E)])
+//#define vector_slot(V,E) (vector_lookup(V,E))
+
 #define vector_active(V) ((V)->active)
 #define vector_foreach_slot(v,p,i) \
 	for (i = 0; i < (v)->allocated && ((p) = (v)->slot[i]); i++)
+#define FMT_STR_VSLOT(V,E) ((char*)strvec_slot(V,E))
 
 /* Prototypes */
+extern null_strvec_handler_t register_null_strvec_handler(null_strvec_handler_t);
+extern null_strvec_handler_t unregister_null_strvec_handler(void);
+extern void *strvec_slot(const vector_t *strvec, size_t index);
 extern vector_t *vector_alloc(void);
-extern vector_t *vector_init(unsigned int);
 extern void vector_alloc_slot(vector_t *);
-extern void vector_insert_slot(vector_t *, int, void *);
-extern vector_t *vector_copy(vector_t *);
-extern void vector_ensure(vector_t *, unsigned int);
-extern int vector_empty_slot(vector_t *);
-extern int vector_set(vector_t *, void *);
 extern void vector_set_slot(vector_t *, void *);
-extern int vector_set_index(vector_t *, unsigned int, void *);
-extern void *vector_lookup(vector_t *, unsigned int);
-extern void *vector_lookup_ensure(vector_t *, unsigned int);
 extern void vector_unset(vector_t *, unsigned int);
 extern unsigned int vector_count(vector_t *);
-extern void vector_only_wrapper_free(vector_t *);
-extern void vector_only_index_free(void *);
-extern void vector_only_slot_free(void *);
 extern void vector_free(vector_t *);
-extern void vector_dump(vector_t *);
+extern void vector_dump(FILE *fp, vector_t *);
 extern void free_strvec(vector_t *);
-extern void dump_strvec(vector_t *);
 
 #endif

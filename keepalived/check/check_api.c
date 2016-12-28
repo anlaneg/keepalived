@@ -20,6 +20,8 @@
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
  */
 
+#include "config.h"
+
 #include <dirent.h>
 #include <dlfcn.h>
 #include "check_api.h"
@@ -28,12 +30,14 @@
 #include "memory.h"
 #include "utils.h"
 #include "logger.h"
+#include "bitops.h"
 #include "global_data.h"
 #include "check_misc.h"
 #include "check_smtp.h"
 #include "check_tcp.h"
 #include "check_http.h"
 #include "check_ssl.h"
+#include "check_dns.h"
 
 /* Global vars */
 static checker_id_t ncheckers = 0;
@@ -52,21 +56,40 @@ static void
 dump_checker(void *data)
 {
 	checker_t *checker = data;
-	log_message(LOG_INFO, " [%s]:%d"
-			    , inet_sockaddrtos(&checker->rs->addr)
-			    , ntohs(inet_sockaddrport(&checker->rs->addr)));
+	log_message(LOG_INFO, " %s", FMT_CHK(checker));
 	(*checker->dump_func) (checker);
+}
+
+void
+dump_conn_opts(void *data)
+{
+	conn_opts_t *conn = data;
+	log_message(LOG_INFO, "   Connection dest = %s", inet_sockaddrtopair(&conn->dst));
+	if (conn->bindto.ss_family)
+		log_message(LOG_INFO, "   Bind to = %s", inet_sockaddrtopair(&conn->bindto));
+#ifdef _WITH_SO_MARK_
+	if (conn->fwmark != 0)
+		log_message(LOG_INFO, "   Connection mark = %u", conn->fwmark);
+#endif
+	log_message(LOG_INFO, "   Connection timeout = %d", conn->connection_to/TIMER_HZ);
 }
 
 /* Queue a checker into the checkers_queue */
 void
 queue_checker(void (*free_func) (void *), void (*dump_func) (void *)
 	      , int (*launch) (thread_t *)
-	      , void *data)
+	      , void *data
+	      , conn_opts_t *co)
 {
 	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
 	real_server_t *rs = LIST_TAIL_DATA(vs->rs);
 	checker_t *checker = (checker_t *) MALLOC(sizeof (checker_t));
+
+	/* Set default dst = RS, timeout = 5 */
+	if (co) {
+		co->dst = rs->addr;
+		co->connection_to = 5 * TIMER_HZ;
+	}
 
 	checker->free_func = free_func;
 	checker->dump_func = dump_func;
@@ -74,9 +97,11 @@ queue_checker(void (*free_func) (void *), void (*dump_func) (void *)
 	checker->vs = vs;
 	checker->rs = rs;
 	checker->data = data;
+	checker->co = co;
 	checker->id = ncheckers++;
 	checker->enabled = (vs->vfwmark) ? 1 : 0;
-#ifdef _WITHOUT_VRRP_
+	checker->warmup = vs->delay_loop;
+#ifndef _WITH_VRRP_
 	checker->enabled = 1;
 #endif
 
@@ -92,17 +117,7 @@ queue_checker(void (*free_func) (void *), void (*dump_func) (void *)
 	}
 }
 
-/* Set dst */
-void
-checker_set_dst(struct sockaddr_storage *dst)
-{
-	virtual_server_t *vs = LIST_TAIL_DATA(check_data->vs);
-	real_server_t *rs = LIST_TAIL_DATA(vs->rs);
-
-	*dst = rs->addr;
-}
-
-void
+static void
 checker_set_dst_port(struct sockaddr_storage *dst, uint16_t port)
 {
 	if (dst->ss_family == AF_INET6) {
@@ -112,6 +127,80 @@ checker_set_dst_port(struct sockaddr_storage *dst, uint16_t port)
 		struct sockaddr_in *addr4 = (struct sockaddr_in *) dst;
 		addr4->sin_port = port;
 	}
+}
+
+/* "connect_ip" keyword */
+static void
+co_ip_handler(vector_t *strvec)
+{
+	conn_opts_t *co = CHECKER_GET_CO();
+	inet_stosockaddr(strvec_slot(strvec, 1), 0, &co->dst);
+}
+
+/* "connect_port" keyword */
+static void
+co_port_handler(vector_t *strvec)
+{
+	conn_opts_t *co = CHECKER_GET_CO();
+	checker_set_dst_port(&co->dst, htons(CHECKER_VALUE_INT(strvec)));
+}
+
+/* "bindto" keyword */
+static void
+co_srcip_handler(vector_t *strvec)
+{
+	conn_opts_t *co = CHECKER_GET_CO();
+	inet_stosockaddr(strvec_slot(strvec, 1), 0, &co->bindto);
+}
+
+/* "bind_port" keyword */
+static void
+co_srcport_handler(vector_t *strvec)
+{
+	conn_opts_t *co = CHECKER_GET_CO();
+	checker_set_dst_port(&co->bindto, htons(CHECKER_VALUE_INT(strvec)));
+}
+
+/* "connect_timeout" keyword */
+static void
+co_timeout_handler(vector_t *strvec)
+{
+	conn_opts_t *co = CHECKER_GET_CO();
+	co->connection_to = CHECKER_VALUE_UINT(strvec) * TIMER_HZ;
+
+	/* do not allow 0 timeout */
+	if (! co->connection_to)
+		co->connection_to = TIMER_HZ;
+}
+
+#ifdef _WITH_SO_MARK_
+/* "fwmark" keyword */
+static void
+co_fwmark_handler(vector_t *strvec)
+{
+	conn_opts_t *co = CHECKER_GET_CO();
+	co->fwmark = CHECKER_VALUE_UINT(strvec);
+}
+#endif
+
+void
+install_connect_keywords(void)
+{
+	install_keyword("connect_ip", &co_ip_handler);
+	install_keyword("connect_port", &co_port_handler);
+	install_keyword("bindto", &co_srcip_handler);
+	install_keyword("bind_port", &co_srcport_handler);
+	install_keyword("connect_timeout", &co_timeout_handler);
+#ifdef _WITH_SO_MARK_
+	install_keyword("fwmark", &co_fwmark_handler);
+#endif
+}
+
+/* "warmup" keyword */
+void warmup_handler(vector_t *strvec)
+{
+	checker_t *checker = CHECKER_GET_CURRENT();
+	checker->warmup = CHECKER_VALUE_UINT(strvec) * TIMER_HZ;
 }
 
 /* dump the checkers_queue */
@@ -135,8 +224,7 @@ init_checkers_queue(void)
 void
 free_checkers_queue(void)
 {
-	free_list(checkers_queue);
-	checkers_queue = NULL;
+	free_list(&checkers_queue);
 	ncheckers = 0;
 }
 
@@ -146,16 +234,25 @@ register_checkers_thread(void)
 {
 	checker_t *checker;
 	element e;
+	unsigned long warmup;
 
 	for (e = LIST_HEAD(checkers_queue); e; ELEMENT_NEXT(e)) {
 		checker = ELEMENT_DATA(e);
-		log_message(LOG_INFO, "Activating healthchecker for service [%s]:%d"
-				    , inet_sockaddrtos(&checker->rs->addr)
-				    , ntohs(inet_sockaddrport(&checker->rs->addr)));
+		log_message(LOG_INFO, "Activating healthchecker for service %s"
+				    , FMT_CHK(checker));
 		CHECKER_ENABLE(checker);
 		if (checker->launch)
+		{
+			/* wait for a random timeout to begin checker thread.
+			   It helps avoiding multiple simultaneous checks to
+			   the same RS.
+			*/
+			warmup = checker->warmup;
+			if (warmup)
+				warmup = warmup * (unsigned)rand() / RAND_MAX;
 			thread_add_timer(master, checker->launch, checker,
-					 BOOTSTRAP_DELAY);
+					 BOOTSTRAP_DELAY + warmup);
+		}
 	}
 }
 
@@ -170,7 +267,7 @@ update_checker_activity(sa_family_t family, void *address, int enable)
 	void *addr;
 
 	/* Display netlink operation */
-	if (debug & 32) {
+	if (__test_bit(LOG_DETAIL_BIT, &debug)) {
 		inet_ntop(family, address, addr_str, sizeof(addr_str));
 		log_message(LOG_INFO, "Netlink reflector reports IP %s %s"
 				    , addr_str, (enable) ? "added" : "removed");
@@ -194,13 +291,11 @@ update_checker_activity(sa_family_t family, void *address, int enable)
 			if (inaddr_equal(family, addr, address) &&
 			    CHECKER_HA_SUSPEND(checker)) {
 				if (!CHECKER_ENABLED(checker) && enable)
-					log_message(LOG_INFO, "Activating healthchecker for service [%s]:%d"
-							    , inet_sockaddrtos(&checker->rs->addr)
-							    , ntohs(inet_sockaddrport(&checker->rs->addr)));
+					log_message(LOG_INFO, "Activating healthchecker for service %s"
+							    , FMT_CHK(checker));
 				if (CHECKER_ENABLED(checker) && !enable)
-					log_message(LOG_INFO, "Suspending healthchecker for service [%s]:%d"
-							    , inet_sockaddrtos(&checker->rs->addr)
-							    , ntohs(inet_sockaddrport(&checker->rs->addr)));
+					log_message(LOG_INFO, "Suspending healthchecker for service %s"
+							    , FMT_CHK(checker));
 				checker->enabled = enable;
 			}
 		}
@@ -216,4 +311,5 @@ install_checkers_keyword(void)
 	install_tcp_check_keyword();
 	install_http_check_keyword();
 	install_ssl_check_keyword();
+	install_dns_check_keyword();
 }

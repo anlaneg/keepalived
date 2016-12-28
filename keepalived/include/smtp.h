@@ -35,9 +35,8 @@
 
 /* global defs */
 #define SMTP_PORT_STR		"25"
-#define SMTP_PORT		25
-#define SMTP_BUFFER_LENGTH	512
-#define SMTP_BUFFER_MAX		1024
+#define SMTP_BUFFER_LENGTH	512U
+#define SMTP_BUFFER_MAX		1024U
 #define SMTP_MAX_FSM_STATE	10
 
 /* SMTP command stage */
@@ -71,11 +70,12 @@ do {					\
 typedef struct _smtp {
 	int		fd;
 	int		stage;
-	int		email_it;
+	unsigned	email_it;
 	char		*subject;
 	char		*body;
 	char		*buffer;
-	long		buflen;
+	char		*email_to;
+	size_t		buflen;
 } smtp_t;
 
 /* SMTP command string processing */
@@ -84,10 +84,12 @@ typedef struct _smtp {
 #define SMTP_RCPT_CMD    "RCPT TO:<%s>\r\n"
 #define SMTP_DATA_CMD    "DATA\r\n"
 #define SMTP_HEADERS_CMD "Date: %s\r\nFrom: %s\r\nSubject: %s\r\n" \
-			 "X-Mailer: Keepalived\r\n\r\n"
+			 "X-Mailer: Keepalived\r\nTo: %s\r\n\r\n"
 #define SMTP_BODY_CMD    "%s\r\n"
 #define SMTP_SEND_CMD    "\r\n.\r\n"
 #define SMTP_QUIT_CMD    "QUIT\r\n"
+
+#define FMT_SMTP_HOST()	inet_sockaddrtopair(&global_data->smtp_server)
 
 /* Prototypes defs */
 extern void smtp_alert(real_server_t *, vrrp_t *, vrrp_sgroup_t *,

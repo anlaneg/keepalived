@@ -1,12 +1,12 @@
-/* 
+/*
  * Soft:        Keepalived is a failover program for the LVS project
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
- * 
+ *
  * Part:        List structure manipulation.
- *  
+ *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
- *              
+ *
  *              This program is distributed in the hope that it will be useful,
  *              but WITHOUT ANY WARRANTY; without even the implied warranty of
  *              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
@@ -19,6 +19,8 @@
  *
  * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
  */
+
+#include "config.h"
 
 #include "list.h"
 #include "memory.h"
@@ -43,6 +45,7 @@ list_add(list l, void *data)
 	element e = alloc_element();
 
 	e->prev = l->tail;
+	/* e->next = NULL;	// MALLOC sets this NULL */
 	e->data = data;
 
 	if (l->head == NULL)
@@ -78,15 +81,19 @@ list_del(list l, void *data)
 }
 
 void *
-list_element(list l, int num)
+list_element(list l, unsigned num)
 {
 	element e = LIST_HEAD(l);
-	int i = 0;
+	unsigned i = 0;
 
 	/* fetch element number num */
-	for (i = 0; i < num; i++)
-		if (e)
-			ELEMENT_NEXT(e);
+	for (i = 0; i < num; i++) {
+		if (!e)
+			return NULL;
+
+		ELEMENT_NEXT(e);
+	}
+
 	if (e)
 		return ELEMENT_DATA(e);
 	return NULL;
@@ -103,7 +110,7 @@ dump_list(list l)
 }
 
 static void
-free_element(list l)
+free_elements(list l)
 {
 	element e;
 	element next;
@@ -115,44 +122,48 @@ free_element(list l)
 		l->count--;
 		FREE(e);
 	}
+#if 0
+	if (l->count)
+		log_message(LOG_INFO, "free_elements left %d elements on the list", l->count);
+#endif
 }
 
 void
 free_list_elements(list l)
 {
-	element e;
-	element next;
-	
-	for (e = LIST_HEAD(l); e; e = next) {
-		next = e->next;
-		l->count--;
-		FREE(e);
-	}
+	free_elements(l);
+
 	l->head = NULL;
 	l->tail = NULL;
 }
 
 void
-free_list(list l)
+free_list(list *lp)
 {
+	list l = *lp;
+
 	if (!l)
 		return;
-	free_element(l);
+
+	/* Remove the caller's reference to the list */
+	*lp = NULL;
+
+	free_elements(l);
 	FREE(l);
 }
 
 void
 free_list_element(list l, element e)
 {
-	if (!e)
+	if (!l || !e)
 		return;
 	if (l->head == e)
-		l->head = (e->next == e) ? NULL : e->next;
-	if (l->tail == e)
-		l->tail = (e->prev == e) ? NULL : e->prev;
-	if (e->prev)
+		l->head = e->next;
+	else
 		e->prev->next = e->next;
-	if (e->next)
+	if (l->tail == e)
+		l->tail = e->prev;
+	else
 		e->next->prev = e->prev;
 	if (l->free)
 		(*l->free) (e->data);
@@ -162,7 +173,7 @@ free_list_element(list l, element e)
 
 /* Multiple list helpers functions */
 list
-alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), int size)
+alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), size_t size)
 {
 	list new = (list) MALLOC(size * sizeof (struct _list));
 	new->free = free_func;
@@ -170,6 +181,7 @@ alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), int size)
 	return new;
 }
 
+#ifdef _INCLUDE_UNUSED_CODE_
 void
 dump_mlist(list l, int size)
 {
@@ -182,8 +194,9 @@ dump_mlist(list l, int size)
 				(*l->dump) (e->data);
 	}
 }
+#endif
 
-void
+static void
 free_melement(list l, void (*free_func) (void *))
 {
 	element e;
