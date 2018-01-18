@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _LAYER4_H
@@ -31,10 +31,10 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <net/if.h>
 
 /* local includes */
 #include "scheduler.h"
-#include "check_api.h"
 
 enum connect_result {
 	connect_error,
@@ -43,9 +43,22 @@ enum connect_result {
 	connect_success
 };
 
+/* connection options structure definition */
+typedef struct _conn_opts {
+	struct sockaddr_storage		dst;
+	struct sockaddr_storage		bindto;
+	char				bind_if[IFNAMSIZ];
+	unsigned int			connection_to; /* connection time-out */
+#ifdef _WITH_SO_MARK_
+	unsigned int			fwmark; /* to mark packets going out of the socket using SO_MARK */
+#endif
+} conn_opts_t;
+
 /* Prototypes defs */
+#ifdef _WITH_LVS_
 extern enum connect_result
  socket_bind_connect(int, conn_opts_t *);
+#endif
 
 extern enum connect_result
  socket_connect(int, struct sockaddr_storage *);
@@ -53,17 +66,21 @@ extern enum connect_result
 extern enum connect_result
  socket_state(thread_t *, int (*func) (thread_t *));
 
+#ifdef _WITH_LVS_
 extern int
  socket_connection_state(int, enum connect_result
 		      , thread_t *, int (*func) (thread_t *)
 		      , unsigned long);
+#endif
 
 /* Backward compatibility */
+#ifdef _WITH_LVS_
 static inline enum connect_result
 tcp_bind_connect(int fd, conn_opts_t *co)
 {
 	return socket_bind_connect(fd, co);
 }
+#endif
 
 static inline enum connect_result
 tcp_connect(int fd, struct sockaddr_storage *addr)
@@ -77,10 +94,13 @@ tcp_socket_state(thread_t * thread, int (*func) (thread_t *))
 	return socket_state(thread, func);
 }
 
+#ifdef _WITH_LVS_
 static inline int
 tcp_connection_state(int fd, enum connect_result status, thread_t * thread,
              int (*func) (thread_t *), unsigned long timeout)
 {
 	return socket_connection_state(fd, status, thread, func, timeout);
 }
+#endif
+
 #endif

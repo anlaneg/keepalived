@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _BITOPS_H
@@ -49,16 +49,26 @@ static inline bool __test_bit(unsigned idx, unsigned long *bmap)
 /* Bits */
 enum global_bits {
 	LOG_CONSOLE_BIT,
+	NO_SYSLOG_BIT,
 	DONT_FORK_BIT,
 	DUMP_CONF_BIT,
+#ifdef _WITH_VRRP_
 	DONT_RELEASE_VRRP_BIT,
+	RELEASE_VIPS_BIT,
+#endif
+#ifdef _WITH_LVS_
 	DONT_RELEASE_IPVS_BIT,
+#endif
 	LOG_DETAIL_BIT,
 	DONT_RESPAWN_BIT,
-	RELEASE_VIPS_BIT,
+#ifdef _MEM_CHECK_
 	MEM_ERR_DETECT_BIT,
 #ifdef _MEM_CHECK_LOG_
 	MEM_CHECK_LOG_BIT,
+#endif
+#endif
+#ifdef _WITH_LVS_
+	LOG_ADDRESS_CHANGES,
 #endif
 };
 

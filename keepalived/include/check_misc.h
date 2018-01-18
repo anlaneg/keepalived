@@ -18,7 +18,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _CHECK_MISC_H
@@ -31,19 +31,23 @@
 
 /* local includes */
 #include "scheduler.h"
+#include "notify.h"
 
 /* Checker argument structure  */
 typedef struct _misc_checker {
 	char			*path;
 	unsigned long		timeout;
-	int			dynamic;	/* 0: old-style, 1: exit code from checker affects weight */
-	bool			forcing_termination; /* Set if we have sent the process a SIGTERM */
+	bool			dynamic;	/* false: old-style, true: exit code from checker affects weight */
+	script_state_t		state;		/* current state of script */
 	uid_t			uid;		/* uid for script execution */
 	gid_t			gid;		/* gid for script execution */
 	bool			insecure;	/* script is insecure */
+	bool			initial_state_reported;
+	timeval_t		last_ran;	/* Time script last ran */
 } misc_checker_t;
 
 /* Prototypes defs */
+extern void clear_dynamic_misc_check_flag(void);
 extern void install_misc_check_keyword(void);
 extern int check_misc_script_security(void);
 

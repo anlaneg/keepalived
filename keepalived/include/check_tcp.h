@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _CHECK_TCP_H
@@ -30,12 +30,6 @@
 
 /* local includes */
 #include "scheduler.h"
-
-typedef struct _tcp_check {
-	unsigned	n_retry;
-	unsigned long	delay_before_retry;
-	unsigned	retry_it;
-} tcp_check_t;
 
 /* macro utility */
 #define FMT_TCP_RS(C) FMT_CHK(C)

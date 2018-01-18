@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2016-2016 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2016-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 /*******************************************************************************
@@ -174,6 +174,10 @@
 //#include "linux/unistd.h"
 //_syscall2(int, setns, int, fd, int, nstype)
 #include <unistd.h>
+#ifndef SYS_setns
+#define SYS_setns __NR_setns
+#endif
+
 #include <sys/syscall.h>
 
 #include "namespaces.h"
@@ -200,6 +204,7 @@ void
 free_dirname(void)
 {
 	FREE_PTR(mount_dirname);
+	mount_dirname = NULL;
 }
 
 static void
@@ -280,6 +285,7 @@ set_namespaces(const char* net_namespace)
 	set_run_mount(net_namespace);
 
 	FREE_PTR(netns_path);
+	netns_path = NULL;
 
 	return true;
 
@@ -287,6 +293,7 @@ err:
 	if (fd != -1)
 		close(fd);
 	FREE_PTR(netns_path);
+	netns_path = NULL;
 
 	return false;
 }

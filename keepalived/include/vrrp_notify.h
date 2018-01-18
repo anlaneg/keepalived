@@ -18,7 +18,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _VRRP_NOTIFY_H
@@ -29,5 +29,6 @@
 
 extern int notify_instance_exec(vrrp_t *, int);
 extern int notify_group_exec(vrrp_sgroup_t *, int);
+extern void notify_instance_fifo(const vrrp_t *, int);
 
 #endif

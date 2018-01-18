@@ -18,11 +18,13 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2016 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _READ_RTTABLES_H
 #define _READ_RTTABLES_H
+
+#include <stdint.h>
 
 extern void clear_rt_names(void);
 extern bool find_rttables_table(const char *, uint32_t *);

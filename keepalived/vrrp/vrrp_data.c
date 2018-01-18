@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -35,6 +35,7 @@
 #include "utils.h"
 #include "logger.h"
 #include "bitops.h"
+#include "vrrp_ipaddress.h"
 #ifdef _HAVE_FIB_ROUTING_
 #include "vrrp_iprule.h"
 #include "vrrp_iproute.h"
@@ -147,22 +148,25 @@ dump_vscript(void *data)
 	log_message(LOG_INFO, "   Fall = %d", vscript->fall);
 	log_message(LOG_INFO, "   Insecure = %s", vscript->insecure ? "yes" : "no");
 
-	switch (vscript->result) {
-	case VRRP_SCRIPT_STATUS_INIT:
+	switch (vscript->init_state) {
+	case SCRIPT_INIT_STATE_INIT:
 		str = "INIT"; break;
-	case VRRP_SCRIPT_STATUS_INIT_GOOD:
+	case SCRIPT_INIT_STATE_GOOD:
 		str = "INIT/GOOD"; break;
-	case VRRP_SCRIPT_STATUS_INIT_FAILED:
+	case SCRIPT_INIT_STATE_FAILED:
 		str = "INIT/FAILED"; break;
-	case VRRP_SCRIPT_STATUS_DISABLED:
+	case SCRIPT_INIT_STATE_DISABLED:
 		str = "DISABLED"; break;
 	default:
 		str = (vscript->result >= vscript->rise) ? "GOOD" : "BAD";
 	}
 	log_message(LOG_INFO, "   Status = %s", str);
-	if (vscript->uid || vscript->gid)
-		log_message(LOG_INFO, "   Script uid:gid = %d:%d", vscript->uid, vscript->gid);
-
+	log_message(LOG_INFO, "   Script uid:gid = %d:%d", vscript->uid, vscript->gid);
+	log_message(LOG_INFO, "   State = %s",
+			vscript->state == SCRIPT_STATE_IDLE ? "idle" :
+			vscript->state == SCRIPT_STATE_RUNNING ? "running" :
+			vscript->state == SCRIPT_STATE_REQUESTING_TERMINATION ? "requested termination" :
+			vscript->state == SCRIPT_STATE_FORCING_TERMINATION ? "forcing termination" : "unknown");
 }
 
 /* Socket pool functions */
@@ -222,7 +226,9 @@ free_vrrp(void *data)
 	free_notify_script(&vrrp->script_stop);
 	free_notify_script(&vrrp->script);
 	FREE_PTR(vrrp->stats);
+#ifdef _WITH_VRRP_AUTH_
 	FREE(vrrp->ipsecah_counter);
+#endif
 
 	if (!LIST_ISEMPTY(vrrp->track_ifp))
 		for (e = LIST_HEAD(vrrp->track_ifp); e; ELEMENT_NEXT(e))
@@ -253,11 +259,15 @@ dump_vrrp(void *data)
 	log_message(LOG_INFO, "   Using VRRPv%d", vrrp->version);
 	if (vrrp->family == AF_INET6)
 		log_message(LOG_INFO, "   Using Native IPv6");
-	if (vrrp->init_state == VRRP_STATE_BACK)
+	if (vrrp->wantstate == VRRP_STATE_BACK)
 		log_message(LOG_INFO, "   Want State = BACKUP");
 	else
 		log_message(LOG_INFO, "   Want State = MASTER");
 	log_message(LOG_INFO, "   Running on device = %s", IF_NAME(vrrp->ifp));
+#ifdef _WITH_VRRP_VMAC_
+	if (vrrp->ifp->vmac)
+		log_message(LOG_INFO, "   Real interface = %s\n", IF_NAME(if_get_by_ifindex(vrrp->ifp->base_ifindex)));
+#endif
 	if (vrrp->dont_track_primary)
 		log_message(LOG_INFO, "   VRRP interface tracking disabled");
 	log_message(LOG_INFO, "   Skip checking advert IP addresses = %s", vrrp->skip_check_adv_addr ? "yes" : "no");
@@ -274,6 +284,7 @@ dump_vrrp(void *data)
 	log_message(LOG_INFO, "   Gratuitous ARP lower priority delay = %d", vrrp->garp_lower_prio_delay / TIMER_HZ);
 	log_message(LOG_INFO, "   Gratuitous ARP lower priority repeat = %d", vrrp->garp_lower_prio_rep);
 	log_message(LOG_INFO, "   Send advert after receive lower priority advert = %s", vrrp->lower_prio_no_advert ? "false" : "true");
+	log_message(LOG_INFO, "   Send advert after receive higher priority advert = %s", vrrp->higher_prio_send_advert ? "true" : "false");
 	log_message(LOG_INFO, "   Virtual Router ID = %d", vrrp->vrid);
 	log_message(LOG_INFO, "   Priority = %d", vrrp->base_priority);
 	log_message(LOG_INFO, "   Advert interval = %d %s",
@@ -313,6 +324,11 @@ dump_vrrp(void *data)
 	if (!LIST_ISEMPTY(vrrp->unicast_peer)) {
 		log_message(LOG_INFO, "   Unicast Peer = %d", LIST_SIZE(vrrp->unicast_peer));
 		dump_list(vrrp->unicast_peer);
+#ifdef _WITH_UNICAST_CHKSUM_COMPAT_
+		log_message(LOG_INFO, "   Unicast checksum compatibility = %s",
+					vrrp->unicast_chksum_compat == CHKSUM_COMPATIBILITY_NONE ? "no" :
+					vrrp->unicast_chksum_compat == CHKSUM_COMPATIBILITY_NEVER ? "never" : "yes");
+#endif
 	}
 	if (!LIST_ISEMPTY(vrrp->vip)) {
 		log_message(LOG_INFO, "   Virtual IP = %d", LIST_SIZE(vrrp->vip));
@@ -370,12 +386,14 @@ alloc_vrrp_stats(void)
 	new->become_master = 0;
 	new->release_master = 0;
 	new->invalid_authtype = 0;
+#ifdef _WITH_VRRP_AUTH_
 	new->authtype_mismatch = 0;
+	new->auth_failure = 0;
+#endif
 	new->packet_len_err = 0;
 	new->advert_rcvd = 0;
 	new->advert_sent = 0;
 	new->advert_interval_err = 0;
-	new->auth_failure = 0;
 	new->ip_ttl_err = 0;
 	new->pri_zero_rcvd = 0;
 	new->pri_zero_sent = 0;
@@ -388,21 +406,24 @@ void
 alloc_vrrp(char *iname)
 {
 	size_t size = strlen(iname);
+#ifdef _WITH_VRRP_AUTH_
 	seq_counter_t *counter;
+#endif
 	vrrp_t *new;
 
 	/* Allocate new VRRP structure */
 	new = (vrrp_t *) MALLOC(sizeof(vrrp_t));
+#ifdef _WITH_VRRP_AUTH_
 	counter = (seq_counter_t *) MALLOC(sizeof(seq_counter_t));
 
 	/* Build the structure */
 	new->ipsecah_counter = counter;
+#endif
 
 	/* Set default values */
 	new->family = AF_UNSPEC;
 	new->saddr.ss_family = AF_UNSPEC;
 	new->wantstate = VRRP_STATE_BACK;
-	new->init_state = VRRP_STATE_BACK;
 	new->version = 0;
 	new->master_priority = 0;
 	new->last_transition = timer_now();
@@ -418,6 +439,10 @@ alloc_vrrp(char *iname)
 	new->garp_lower_prio_delay = PARAMETER_UNSET;
 	new->garp_lower_prio_rep = PARAMETER_UNSET;
 	new->lower_prio_no_advert = PARAMETER_UNSET;
+	new->higher_prio_send_advert = PARAMETER_UNSET;
+#ifdef _WITH_UNICAST_CHKSUM_COMPAT_
+	new->unicast_chksum_compat = CHKSUM_COMPATIBILITY_NONE;
+#endif
 
 	new->skip_check_adv_addr = global_data->vrrp_skip_check_adv_addr;
 	new->strict_mode = PARAMETER_UNSET;
@@ -476,18 +501,35 @@ alloc_vrrp_track_script(vector_t *strvec)
 
 	if (!LIST_EXISTS(vrrp->track_script))
 		vrrp->track_script = alloc_list(NULL, dump_track_script);
-	alloc_track_script(vrrp->track_script, strvec);
+	alloc_track_script(vrrp->track_script, strvec, vrrp->iname);
 }
 
 void
 alloc_vrrp_vip(vector_t *strvec)
 {
 	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+	void *list_end = NULL;
+	sa_family_t address_family;
 
 	if (!LIST_EXISTS(vrrp->vip))
 		vrrp->vip = alloc_list(free_ipaddress, dump_ipaddress);
+	else if (!LIST_ISEMPTY(vrrp->vip))
+		list_end = LIST_TAIL_DATA(vrrp->vip);
+
 	alloc_ipaddress(vrrp->vip, strvec, vrrp->ifp);
+
+	if (!LIST_ISEMPTY(vrrp->vip) && LIST_TAIL_DATA(vrrp->vip) != list_end) {
+		address_family = IP_FAMILY((ip_address_t*)LIST_TAIL_DATA(vrrp->vip));
+
+		if (vrrp->family == AF_UNSPEC)
+			vrrp->family = address_family;
+		else if (address_family != vrrp->family) {
+			log_message(LOG_INFO, "(%s): address family must match VRRP instance [%s] - ignoring", vrrp->iname, FMT_STR_VSLOT(strvec, 0));
+			free_list_element(vrrp->vip, vrrp->vip->tail);
+		}
+	}
 }
+
 void
 alloc_vrrp_evip(vector_t *strvec)
 {
@@ -533,7 +575,8 @@ alloc_vrrp_script(char *sname)
 	new->interval = VRRP_SCRIPT_DI * TIMER_HZ;
 	new->timeout = VRRP_SCRIPT_DT * TIMER_HZ;
 	new->weight = VRRP_SCRIPT_DW;
-	new->result = VRRP_SCRIPT_STATUS_INIT;
+	new->init_state = SCRIPT_INIT_STATE_INIT;
+	new->state = SCRIPT_STATE_IDLE;
 	new->inuse = 0;
 	new->rise = 1;
 	new->fall = 1;
@@ -551,6 +594,11 @@ alloc_vrrp_buffer(size_t len)
 void
 free_vrrp_buffer(void)
 {
+	/* If the configuration failed, we may not have
+	 * allocated a buffer */
+	if (!vrrp_buffer)
+		return;
+
 	FREE(vrrp_buffer);
 	vrrp_buffer = NULL;
 	vrrp_buffer_len = 0;
@@ -563,7 +611,7 @@ alloc_vrrp_data(void)
 
 	new = (vrrp_data_t *) MALLOC(sizeof(vrrp_data_t));
 	new->vrrp = alloc_list(free_vrrp, dump_vrrp);
-	new->vrrp_index = alloc_mlist(NULL, NULL, 255+1);
+	new->vrrp_index = alloc_mlist(NULL, NULL, 1151+1);
 	new->vrrp_index_fd = alloc_mlist(NULL, NULL, 1024+1);
 	new->vrrp_sync_group = alloc_list(free_vgroup, dump_vgroup);
 	new->vrrp_script = alloc_list(free_vscript, dump_vscript);
@@ -578,7 +626,7 @@ free_vrrp_data(vrrp_data_t * data)
 	free_list(&data->static_addresses);
 	free_list(&data->static_routes);
 	free_list(&data->static_rules);
-	free_mlist(data->vrrp_index, 255+1);
+	free_mlist(data->vrrp_index, 1151+1);
 	free_mlist(data->vrrp_index_fd, 1024+1);
 	free_list(&data->vrrp);
 	free_list(&data->vrrp_sync_group);

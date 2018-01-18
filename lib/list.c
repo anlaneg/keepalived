@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -81,10 +81,10 @@ list_del(list l, void *data)
 }
 
 void *
-list_element(list l, unsigned num)
+list_element(list l, size_t num)
 {
 	element e = LIST_HEAD(l);
-	unsigned i = 0;
+	size_t i = 0;
 
 	/* fetch element number num */
 	for (i = 0; i < num; i++) {
@@ -183,7 +183,7 @@ alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), size_t size)
 
 #ifdef _INCLUDE_UNUSED_CODE_
 void
-dump_mlist(list l, int size)
+dump_mlist(list l, size_t size)
 {
 	element e;
 	int i;
@@ -211,9 +211,9 @@ free_melement(list l, void (*free_func) (void *))
 }
 
 void
-free_mlist(list l, int size)
+free_mlist(list l, size_t size)
 {
-	int i;
+	size_t i;
 
 	if (!l)
 		return;

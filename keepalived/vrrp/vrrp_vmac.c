@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -27,10 +27,11 @@
 #include <sys/socket.h>
 #endif
 #include <linux/if_link.h>
+#include <stdint.h>
 
 /* local include */
 #include "vrrp_vmac.h"
-#include "vrrp_netlink.h"
+#include "keepalived_netlink.h"
 #include "vrrp_data.h"
 #include "logger.h"
 #include "bitops.h"
@@ -189,7 +190,7 @@ netlink_link_add_vmac(vrrp_t *vrrp)
 		/*
 		 * Update interface queue and vrrp instance interface binding.
 		 */
-		netlink_interface_lookup();
+		netlink_interface_lookup(ifname);
 		ifp = if_get_by_ifname(ifname);
 		if (!ifp)
 			return -1;
@@ -200,7 +201,7 @@ netlink_link_add_vmac(vrrp_t *vrrp)
 	ifp->flags = vrrp->ifp->flags; /* Copy base interface flags */
 	vrrp->ifp = ifp;
 	vrrp->ifp->base_ifindex = base_ifindex;
-	vrrp->ifp->vmac = 1;
+	vrrp->ifp->vmac = true;
 	vrrp->vmac_ifindex = IF_INDEX(vrrp->ifp); /* For use on delete */
 
 	if (vrrp->family == AF_INET) {
@@ -298,6 +299,11 @@ netlink_link_add_vmac(vrrp_t *vrrp)
 			log_message(LOG_INFO, "Deleting auto link-local address from vmac failed");
 	}
 #endif
+
+	/* If we are adding a large number of interfaces, the netlink socket
+	 * may run out of buffers if we don't receive the netlink messages
+	 * as we progress */
+	kernel_netlink_poll();
 
 	return 1;
 }

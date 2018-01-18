@@ -19,6 +19,7 @@
  *              2 of the License, or (at your option) any later version.
  *
  * Copyright (C) 2012 John Southworth, <john.southworth@vyatta.com>
+ * Copyright (C) 2015-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -27,13 +28,15 @@
 #include "vrrp.h"
 #include "vrrp_data.h"
 #include "vrrp_print.h"
+#include "vrrp_ipaddress.h"
 #ifdef _HAVE_FIB_ROUTING_
 #include "vrrp_iproute.h"
 #include "vrrp_iprule.h"
 #endif
-#include "vrrp_netlink.h"
+#include "keepalived_netlink.h"
 #include "rttables.h"
 #include "logger.h"
+#include "vrrp_if.h"
 
 #include <time.h>
 #include <errno.h>
@@ -90,17 +93,18 @@ vscript_print(FILE *file, void *data)
 	fprintf(file, "   Interval = %lu sec\n", vscript->interval / TIMER_HZ);
 	fprintf(file, "   Weight = %d\n", vscript->weight);
 	fprintf(file, "   Rise = %d\n", vscript->rise);
-	fprintf(file, "   Full = %d\n", vscript->fall);
+	fprintf(file, "   Fall = %d\n", vscript->fall);
 	fprintf(file, "   Insecure = %s\n", vscript->insecure ? "yes" : "no");
+	fprintf(file, "   uid:gid = %d:%d\n", vscript->uid, vscript->gid);
 
-	switch (vscript->result) {
-	case VRRP_SCRIPT_STATUS_INIT:
+	switch (vscript->init_state) {
+	case SCRIPT_INIT_STATE_INIT:
 		str = "INIT"; break;
-	case VRRP_SCRIPT_STATUS_INIT_GOOD:
+	case SCRIPT_INIT_STATE_GOOD:
 		str = "INIT/GOOD"; break;
-	case VRRP_SCRIPT_STATUS_INIT_FAILED:
+	case SCRIPT_INIT_STATE_FAILED:
 		str = "INIT/FAILED"; break;
-	case VRRP_SCRIPT_STATUS_DISABLED:
+	case SCRIPT_INIT_STATE_DISABLED:
 		str = "DISABLED"; break;
 	default:
 		str = (vscript->result >= vscript->rise) ? "GOOD" : "BAD";
@@ -134,6 +138,14 @@ address_print(FILE *file, void *data)
 		, IP_IS4(ipaddr) ? get_rttables_scope(ipaddr->ifa.ifa_scope) : ""
 		, ipaddr->label ? " label " : ""
 		, ipaddr->label ? ipaddr->label : "");
+}
+
+static void
+sockaddr_print(FILE *file, void *data)
+{
+	struct sockaddr_storage *addr = data;
+
+	fprintf(file, "     %s\n", inet_sockaddrtos(addr));
 }
 
 #ifdef _HAVE_FIB_ROUTING_
@@ -217,7 +229,7 @@ if_print(FILE *file, void * data)
 	if (IF_MII_SUPPORTED(ifp))
 		fprintf(file, " NIC support MII regs\n");
 	else if (IF_ETHTOOL_SUPPORTED(ifp))
-		fprintf(file, " NIC support EHTTOOL GLINK interface\n");
+		fprintf(file, " NIC support ETHTOOL GLINK interface\n");
 	else
 		fprintf(file, " Enabling NIC ioctl refresh polling\n");
 }
@@ -232,27 +244,32 @@ vrrp_print(FILE *file, void *data)
 	char time_str[26];
 
 	fprintf(file, " VRRP Instance = %s\n", vrrp->iname);
-	fprintf(file, " VRRP Version = %d\n", vrrp->version);
+	fprintf(file, "   VRRP Version = %d\n", vrrp->version);
 	if (vrrp->family == AF_INET6)
 		fprintf(file, "   Using Native IPv6\n");
+	fprintf(file, "   State = ");
 	if (vrrp->state == VRRP_STATE_BACK) {
-		fprintf(file, "   State = BACKUP\n");
+		fprintf(file, "BACKUP\n");
 		fprintf(file, "   Master router = %s\n",
 			inet_sockaddrtos(&vrrp->master_saddr));
 		fprintf(file, "   Master priority = %d\n",
 			vrrp->master_priority);
 	}
 	else if (vrrp->state == VRRP_STATE_FAULT)
-		fprintf(file, "   State = FAULT\n");
+		fprintf(file, "FAULT\n");
 	else if (vrrp->state == VRRP_STATE_MAST)
-		fprintf(file, "   State = MASTER\n");
+		fprintf(file, "MASTER\n");
 	else
-		fprintf(file, "   State = %d\n", vrrp->state);
+		fprintf(file, "%d\n", vrrp->state);
 	ctime_r(&vrrp->last_transition.tv_sec, time_str);
 	time_str[sizeof(time_str)-2] = '\0';	/* Remove '\n' char */
 	fprintf(file, "   Last transition = %ld (%s)\n",
 		vrrp->last_transition.tv_sec, time_str);
 	fprintf(file, "   Listening device = %s\n", IF_NAME(vrrp->ifp));
+#ifdef _HAVE_VRRP_VMAC_
+	if (vrrp->ifp->vmac)
+		fprintf(file, "   Real interface = %s\n", IF_NAME(if_get_by_ifindex(vrrp->ifp->base_ifindex)));
+#endif
 	if (vrrp->dont_track_primary)
 		fprintf(file, "   VRRP interface tracking disabled\n");
 	if (vrrp->skip_check_adv_addr)
@@ -269,12 +286,16 @@ vrrp_print(FILE *file, void *data)
 	fprintf(file, "   Gratuitous ARP lower priority delay = %u\n", vrrp->garp_lower_prio_delay / TIMER_HZ);
 	fprintf(file, "   Gratuitous ARP lower priority repeat = %u\n", vrrp->garp_lower_prio_rep);
 	fprintf(file, "   Send advert after receive lower priority advert = %s\n", vrrp->lower_prio_no_advert ? "false" : "true");
+	fprintf(file, "   Send advert after receive higher priority advert = %s\n", vrrp->higher_prio_send_advert ? "true" : "false");
 	fprintf(file, "   Virtual Router ID = %d\n", vrrp->vrid);
 	fprintf(file, "   Priority = %d\n", vrrp->base_priority);
+	fprintf(file, "   Effective priority = %d\n", vrrp->effective_priority);
 	fprintf(file, "   Advert interval = %d %s\n",
 		(vrrp->version == VRRP_VERSION_2) ? (vrrp->adver_int / TIMER_HZ) :
 		(vrrp->adver_int / (TIMER_HZ / 1000)),
 		(vrrp->version == VRRP_VERSION_2) ? "sec" : "milli-sec");
+	if (vrrp->state == VRRP_STATE_BACK && vrrp->version == VRRP_VERSION_3)
+		fprintf(file, "   Master advert interval = %d milli-sec", vrrp->master_adver_int / (TIMER_HZ / 1000));
 	fprintf(file, "   Accept = %s\n", vrrp->accept ? "enabled" : "disabled");
 	fprintf(file, "   Preempt = %s\n", vrrp->nopreempt ? "disabled" : "enabled");
 	fprintf(file, "   Promote_secondaries = %s\n", vrrp->promote_secondaries ? "enabled" : "disabled");
@@ -315,6 +336,18 @@ vrrp_print(FILE *file, void *data)
 		fprintf(file, "   Virtual IP Excluded = %d\n",
 			LIST_SIZE(vrrp->evip));
 		vrrp_print_list(file, vrrp->evip, &address_print);
+	}
+	if (!LIST_ISEMPTY(vrrp->unicast_peer)) {
+		fprintf(file, "   Unicast Peer = %d\n",
+			LIST_SIZE(vrrp->unicast_peer));
+		vrrp_print_list(file, vrrp->unicast_peer, &sockaddr_print);
+#ifdef _WITH_UNICAST_CHKSUM_COMPAT_
+		fprintf(file, "   Unicast checksum compatibility = %s",
+				vrrp->unicast_chksum_compat == CHKSUM_COMPATIBILITY_NONE ? "no" :
+			        vrrp->unicast_chksum_compat == CHKSUM_COMPATIBILITY_NEVER ? "never" :
+			        vrrp->unicast_chksum_compat == CHKSUM_COMPATIBILITY_CONFIG ? "config" :
+			        vrrp->unicast_chksum_compat == CHKSUM_COMPATIBILITY_AUTO ? "auto" : "unknown");
+#endif
 	}
 #ifdef _HAVE_FIB_ROUTING_
 	if (!LIST_ISEMPTY(vrrp->vroutes)) {
@@ -364,6 +397,9 @@ vrrp_print_data(void)
 		fprintf(file, "------< VRRP Sync groups >------\n");
 		vrrp_print_list(file, vrrp_data->vrrp_sync_group, &vgroup_print);
 	}
+
+	print_interface_list(file);
+
 	fclose(file);
 
 	clear_rt_names();
@@ -406,10 +442,12 @@ vrrp_print_stats(void)
 		fprintf(file, "  Authentication Errors:\n");
 		fprintf(file, "    Invalid Type: %d\n",
 			vrrp->stats->invalid_authtype);
+#ifdef _WITH_VRRP_AUTH_
 		fprintf(file, "    Type Mismatch: %d\n",
 			vrrp->stats->authtype_mismatch);
 		fprintf(file, "    Failure: %d\n",
 			vrrp->stats->auth_failure);
+#endif
 		fprintf(file, "  Priority Zero:\n");
 		fprintf(file, "    Received: %" PRIu64 "\n", vrrp->stats->pri_zero_rcvd);
 		fprintf(file, "    Sent: %" PRIu64 "\n", vrrp->stats->pri_zero_sent);

@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _GLOBAL_DATA_H
@@ -36,16 +36,19 @@
 #endif
 
 #ifdef _HAVE_LIBIPSET_
-#include <libipset/linux_ip_set.h>
+#include <linux/netfilter/ipset/ip_set.h>
 #endif
 
 /* local includes */
 #include "list.h"
 #include "timer.h"
+#ifdef _WITH_VRRP_
 #include "vrrp.h"
+#endif
 #ifdef _WITH_LVS_
 #include "ipvswrapper.h"
 #endif
+#include "notify.h"
 
 #ifndef _HAVE_LIBIPTC_
 #define	XT_EXTENSION_MAXNAMELEN		29
@@ -69,12 +72,14 @@ typedef struct _data {
 	char				*smtp_helo_name;
 	unsigned long			smtp_connection_to;
 	list				email;
+#ifdef _WITH_VRRP_
 	interface_t			*default_ifp;		/* Default interface for static addresses */
+#endif
 #ifdef _WITH_LVS_
 	int				lvs_tcp_timeout;
 	int				lvs_tcpfin_timeout;
 	int				lvs_udp_timeout;
-#ifdef _WITH_LVS_
+#ifdef _WITH_VRRP_
 	struct lvs_syncd_config		lvs_syncd;
 #endif
 	bool				lvs_flush;		/* flush any residual LVS config at startup */
@@ -91,11 +96,10 @@ typedef struct _data {
 	unsigned			vrrp_garp_interval;
 	unsigned			vrrp_gna_interval;
 	bool				vrrp_lower_prio_no_advert;
+	bool				vrrp_higher_prio_send_advert;
 	int				vrrp_version;	/* VRRP version (2 or 3) */
 	char				vrrp_iptables_inchain[XT_EXTENSION_MAXNAMELEN];
 	char				vrrp_iptables_outchain[XT_EXTENSION_MAXNAMELEN];
-	bool				block_ipv4;
-	bool				block_ipv6;
 #ifdef _HAVE_LIBIPSET_
 	bool				using_ipsets;
 	char				vrrp_ipset_address[IPSET_MAXNAMELEN];
@@ -112,6 +116,13 @@ typedef struct _data {
 	char				checker_process_priority;
 	bool				checker_no_swap;
 #endif
+	notify_fifo_t			notify_fifo;
+#ifdef _WITH_VRRP_
+	notify_fifo_t			vrrp_notify_fifo;
+#endif
+#ifdef _WITH_LVS_
+	notify_fifo_t			lvs_notify_fifo;
+#endif
 #ifdef _WITH_SNMP_
 	bool				enable_traps;
 	char				*snmp_socket;
@@ -126,6 +137,7 @@ typedef struct _data {
 #endif
 #ifdef _WITH_DBUS_
 	bool				enable_dbus;
+	char				*dbus_service_name;
 #endif
 	bool				script_security;
 } data_t;

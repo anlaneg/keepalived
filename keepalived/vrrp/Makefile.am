@@ -2,7 +2,7 @@
 #
 # Keepalived OpenSource project.
 #
-# Copyright (C) 2001-2016 Alexandre Cassen, <acassen@gmail.com>
+# Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
 
 AM_CPPFLAGS		= $(KA_CPPFLAGS) $(DEBUG_CPPFLAGS)
 AM_CFLAGS		= $(KA_CFLAGS) $(DEBUG_CFLAGS)
@@ -17,7 +17,7 @@ noinst_LIBRARIES	= libvrrp.a
 libvrrp_a_SOURCES	= \
 	vrrp_daemon.c vrrp_print.c vrrp_data.c vrrp_parser.c \
 	vrrp.c vrrp_notify.c vrrp_scheduler.c vrrp_sync.c vrrp_index.c \
-	vrrp_netlink.c vrrp_arp.c vrrp_if.c vrrp_track.c vrrp_ipaddress.c \
+	vrrp_arp.c vrrp_if.c vrrp_track.c vrrp_ipaddress.c \
 	vrrp_ndisc.c vrrp_if_config.c
 libvrrp_a_SOURCES += ../include/vrrp_daemon.h
 
@@ -57,6 +57,11 @@ endif
 if SNMP
   libvrrp_a_LIBADD	+= vrrp_snmp.o
   EXTRA_libvrrp_a_SOURCES += vrrp_snmp.c
+endif
+
+if WITH_JSON
+  libvrrp_a_LIBADD	+= vrrp_json.o
+  EXTRA_libvrrp_a_SOURCES += vrrp_json.c
 endif
 
 MAINTAINERCLEANFILES	= @MAINTAINERCLEANFILES@

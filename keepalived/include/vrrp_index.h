@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _VRRP_INDEX_H
@@ -36,6 +36,7 @@
 /* Macro definition */
 
 /* prototypes */
+extern int get_vrrp_hash(const int, const int);
 extern void alloc_vrrp_bucket(vrrp_t *);
 extern void alloc_vrrp_fd_bucket(vrrp_t *);
 extern void remove_vrrp_fd_bucket(vrrp_t *);

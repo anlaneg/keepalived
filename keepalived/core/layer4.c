@@ -18,7 +18,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -27,6 +27,9 @@
 #include "utils.h"
 #include "logger.h"
 
+#ifndef _WITH_LVS_
+static
+#endif
 enum connect_result
 socket_bind_connect(int fd, conn_opts_t *co)
 {
@@ -64,11 +67,20 @@ socket_bind_connect(int fd, conn_opts_t *co)
 	}
 #endif
 
+	if (co->bind_if[0]) {
+		if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, co->bind_if, (unsigned)strlen(co->bind_if) + 1) < 0) {
+			log_message(LOG_INFO, "Checker can't bind to device %s: %s", co->bind_if, strerror(errno));
+			return connect_error;
+		}
+	}
+
 	/* Bind socket */
 	if (((struct sockaddr *) bind_addr)->sa_family != AF_UNSPEC) {
 		addrlen = sizeof(*bind_addr);
-		if (bind(fd, (struct sockaddr *) bind_addr, addrlen) != 0)
+		if (bind(fd, (struct sockaddr *) bind_addr, addrlen) != 0) {
+			log_message(LOG_INFO, "Checker bind failed: %s", strerror(errno));
 			return connect_error;
+		}
 	}
 
 	/* Set remote IP and connect */
@@ -83,8 +95,10 @@ socket_bind_connect(int fd, conn_opts_t *co)
 
 	/* If connect is in progress then return 1 else it's real error. */
 	if (ret < 0) {
-		if (errno != EINPROGRESS)
+		if (errno != EINPROGRESS) {
+/*			log_message(LOG_INFO, "Checker connect failed: %s", strerror(errno)); */
 			return connect_error;
+		}
 	}
 
 	/* restore previous fd args */
@@ -144,11 +158,12 @@ socket_state(thread_t * thread, int (*func) (thread_t *))
 	return connect_success;
 }
 
+#ifdef _WITH_LVS_
 int
 socket_connection_state(int fd, enum connect_result status, thread_t * thread,
 		     int (*func) (thread_t *), unsigned long timeout)
 {
-	checker_t *checker;
+	void *checker;
 
 	checker = THREAD_ARG(thread);
 
@@ -166,3 +181,4 @@ socket_connection_state(int fd, enum connect_result status, thread_t * thread,
 		return 1;
 	}
 }
+#endif

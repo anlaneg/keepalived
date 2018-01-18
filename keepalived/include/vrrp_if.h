@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _VRRP_IF_H
@@ -27,7 +27,9 @@
 #include <sys/socket.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 /* needed to get correct values for SIOC* */
 #include <linux/sockios.h>
@@ -48,9 +50,6 @@
 #define LB_IOCTL   0x1
 #define LB_MII     0x2
 #define LB_ETHTOOL 0x4
-
-/* Default values */
-#define IF_DEFAULT_BUFSIZE	(65*1024)
 
 /* I don't know what the correct type is. 
  * The kernel has ifindex in the range [1, INT_MAX], but IFLA_LINK is defined
@@ -86,7 +85,7 @@ typedef struct _interface {
 	int			lb_type;		/* Interface regs selection */
 	bool			linkbeat;		/* LinkBeat from MII BMSR req, SIOCETHTOOL or SIOCGIFFLAGS ioctls */
 #ifdef _HAVE_VRRP_VMAC_
-	int			vmac;			/* Set if interface is a VMAC interface */
+	bool			vmac;			/* Set if interface is a VMAC interface */
 	ifindex_t		base_ifindex;		/* Base interface index (if interface is a VMAC interface),
 							   otherwise the physical interface (i.e. ifindex) */
 #endif
@@ -96,6 +95,9 @@ typedef struct _interface {
 	uint32_t		reset_arp_ignore_value;	/* Original value of arp_ignore to be restored */
 	uint32_t		reset_arp_filter_value;	/* Original value of arp_filter to be restored */
 	uint32_t		reset_promote_secondaries; /* Count of how many vrrps have changed promote_secondaries on interface */
+#ifdef _HAVE_VRRP_VMAC_
+	int			rp_filter;		/* > -1 if we have changed the value */
+#endif
 	bool			promote_secondaries_already_set; /* Set if promote_secondaries already set on interface */
 } interface_t;
 
@@ -161,5 +163,6 @@ extern int if_setsockopt_mcast_hops(sa_family_t, int *);
 extern int if_setsockopt_mcast_if(sa_family_t, int *, interface_t *);
 extern int if_setsockopt_priority(int *, int);
 extern int if_setsockopt_rcvbuf(int *, int);
+extern void print_interface_list(FILE *fp);
 
 #endif

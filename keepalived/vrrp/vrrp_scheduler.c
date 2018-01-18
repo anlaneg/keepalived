@@ -17,13 +17,15 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
 
 #include "vrrp_scheduler.h"
+#ifdef _WITH_VRRP_AUTH_
 #include "vrrp_ipsecah.h"
+#endif
 #include "vrrp_if.h"
 #ifdef _HAVE_VRRP_VMAC_
 #include "vrrp_vmac.h"
@@ -31,13 +33,15 @@
 #include "vrrp.h"
 #include "vrrp_sync.h"
 #include "vrrp_notify.h"
-#include "vrrp_netlink.h"
+#include "keepalived_netlink.h"
 #include "vrrp_data.h"
 #include "vrrp_index.h"
 #include "vrrp_arp.h"
 #include "vrrp_ndisc.h"
 #include "vrrp_if.h"
+#ifdef _WITH_LVS_
 #include "ipvswrapper.h"
+#endif
 #include "memory.h"
 #include "notify.h"
 #include "list.h"
@@ -51,6 +55,7 @@
 #include "vrrp_snmp.h"
 #endif
 #include <netinet/ip.h>
+#include <stdint.h>
 
 /* global vars */
 timeval_t garp_next_time;
@@ -90,7 +95,6 @@ static void vrrp_master(vrrp_t *);
 static void vrrp_fault(vrrp_t *);
 
 static int vrrp_update_priority(thread_t * thread);
-static int vrrp_script_child_timeout_thread(thread_t * thread);
 static int vrrp_script_child_thread(thread_t * thread);
 static int vrrp_script_thread(thread_t * thread);
 
@@ -289,7 +293,7 @@ vrrp_init_state(list l)
 			vrrp->state = VRRP_STATE_BACK;
 			vrrp_smtp_notifier(vrrp);
 			notify_instance_exec(vrrp, VRRP_STATE_BACK);
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 			vrrp_snmp_instance_trap(vrrp);
 #endif
 			vrrp->last_transition = timer_now();
@@ -300,7 +304,7 @@ vrrp_init_state(list l)
 					vgroup->state = VRRP_STATE_BACK;
 					vrrp_sync_smtp_notifier(vgroup);
 					notify_group_exec(vgroup, VRRP_STATE_BACK);
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 					vrrp_snmp_group_trap(vgroup);
 #endif
 				}
@@ -332,6 +336,7 @@ vrrp_init_script(list l)
 {
 	vrrp_script_t *vscript;
 	element e;
+	size_t num_active_scripts = 0;
 
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		vscript = ELEMENT_DATA(e);
@@ -340,23 +345,33 @@ vrrp_init_script(list l)
 			vscript->result = vscript->rise;
 		}
 		else if (!vscript->inuse)
-			vscript->result = VRRP_SCRIPT_STATUS_DISABLED;
+			vscript->init_state = SCRIPT_INIT_STATE_DISABLED;
 		else {
-			switch (vscript->result) {
-			case VRRP_SCRIPT_STATUS_INIT:
+			switch (vscript->init_state) {
+			case SCRIPT_INIT_STATE_INIT:
 				vscript->result = vscript->rise - 1; /* one success is enough */
 				break;
-			case VRRP_SCRIPT_STATUS_INIT_GOOD:
+			case SCRIPT_INIT_STATE_GOOD:
 				vscript->result = vscript->rise; /* one failure is enough */
 				break;
-			case VRRP_SCRIPT_STATUS_INIT_FAILED:
+			case SCRIPT_INIT_STATE_FAILED:
 				vscript->result = 0; /* assume failed by config */
+				break;
+			case SCRIPT_INIT_STATE_DONE:
+			case SCRIPT_INIT_STATE_DISABLED:
+				/* Just to stop compiler warnings */
 				break;
 			}
 
 			thread_add_event(master, vrrp_script_thread, vscript, (int)vscript->interval);
+
+			num_active_scripts++;
 		}
 	}
+
+	if (num_active_scripts)
+		set_child_finder(DEFAULT_CHILD_FINDER, NULL, NULL, NULL, NULL, num_active_scripts);
+
 }
 
 /* Timer functions */
@@ -367,9 +382,18 @@ vrrp_compute_timer(const int fd)
 	element e;
 	list l = &vrrp_data->vrrp_index_fd[fd%1024 + 1];
 	timeval_t timer;
+	timer_reset(timer);
+
+	/*
+	 * If list size's is 1 then no collisions. So
+	 * Test and return the singleton.
+	 */
+	if (LIST_SIZE(l) == 1) {
+		vrrp = ELEMENT_DATA(LIST_HEAD(l));
+			return vrrp->sands;
+	}
 
 	/* Multiple instances on the same interface */
-	timer_reset(timer);
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		vrrp = ELEMENT_DATA(e);
 		if (timer_cmp(vrrp->sands, timer) < 0 ||
@@ -436,8 +460,9 @@ vrrp_register_workers(list l)
 	vrrp_init_sands(vrrp_data->vrrp);
 
 	/* Init VRRP tracking scripts */
-	if (!LIST_ISEMPTY(vrrp_data->vrrp_script))
+	if (!LIST_ISEMPTY(vrrp_data->vrrp_script)) {
 		vrrp_init_script(vrrp_data->vrrp_script);
+	}
 
 	/* Register VRRP workers threads */
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
@@ -574,6 +599,7 @@ vrrp_set_fds(list l)
 
 				/* append to hash index */
 				alloc_vrrp_fd_bucket(vrrp);
+				alloc_vrrp_bucket(vrrp);
 			}
 		}
 	}
@@ -623,6 +649,7 @@ vrrp_dispatcher_release(vrrp_data_t *data)
 static void
 vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 {
+#ifdef _WITH_VRRP_AUTH_
 	struct iphdr *iph;
 	ipsec_ah_t *ah;
 
@@ -635,6 +662,7 @@ vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 				vrrp->ipsecah_counter->cycle = 0;
 		}
 	}
+#endif
 
 	if (!VRRP_ISUP(vrrp)) {
 		vrrp_log_int_down(vrrp);
@@ -643,7 +671,7 @@ vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 		if (vrrp->state != VRRP_STATE_FAULT) {
 			notify_instance_exec(vrrp, VRRP_STATE_FAULT);
 			vrrp->state = VRRP_STATE_FAULT;
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 			vrrp_snmp_instance_trap(vrrp);
 #endif
 		}
@@ -653,8 +681,13 @@ vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 }
 
 static void
-vrrp_become_master(vrrp_t * vrrp, char *buffer, __attribute__((unused)) ssize_t len)
+vrrp_become_master(vrrp_t * vrrp,
+#ifndef _WITH_VRRP_AUTH_
+				 __attribute__((unused))
+#endif
+							 char *buffer, __attribute__((unused)) ssize_t len)
 {
+#ifdef _WITH_VRRP_AUTH_
 	struct iphdr *iph;
 	ipsec_ah_t *ah;
 
@@ -673,6 +706,7 @@ vrrp_become_master(vrrp_t * vrrp, char *buffer, __attribute__((unused)) ssize_t 
 			vrrp->ipsecah_counter->cycle = 0;
 		}
 	}
+#endif
 
 	/* Then jump to master state */
 	vrrp->wantstate = VRRP_STATE_MAST;
@@ -733,7 +767,7 @@ vrrp_leave_fault(vrrp_t * vrrp, char *buffer, ssize_t len)
 			vrrp->state = VRRP_STATE_BACK;
 			vrrp_smtp_notifier(vrrp);
 			notify_instance_exec(vrrp, VRRP_STATE_BACK);
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 			vrrp_snmp_instance_trap(vrrp);
 #endif
 			vrrp->last_transition = timer_now();
@@ -755,8 +789,7 @@ vrrp_goto_master(vrrp_t * vrrp)
 			notify_instance_exec(vrrp, VRRP_STATE_FAULT);
 		vrrp->state = VRRP_STATE_FAULT;
 		vrrp->ms_down_timer = 3 * vrrp->adver_int + VRRP_TIMER_SKEW(vrrp);
-		notify_instance_exec(vrrp, VRRP_STATE_FAULT);
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 		vrrp_snmp_instance_trap(vrrp);
 #endif
 		vrrp->last_transition = timer_now();
@@ -869,8 +902,11 @@ vrrp_master(vrrp_t * vrrp)
 
 	/* Then perform the state transition */
 	if (vrrp->wantstate == VRRP_STATE_GOTO_FAULT ||
-	    vrrp->wantstate == VRRP_STATE_BACK ||
-	    (vrrp->version == VRRP_VERSION_2 && vrrp->ipsecah_counter->cycle)) {
+	    vrrp->wantstate == VRRP_STATE_BACK
+#ifdef _WITH_VRRP_AUTH_
+	    || (vrrp->version == VRRP_VERSION_2 && vrrp->ipsecah_counter->cycle)
+#endif
+										) {
 		vrrp->ms_down_timer = 3 * vrrp->adver_int + VRRP_TIMER_SKEW(vrrp);
 
 		/* handle backup state transition */
@@ -929,12 +965,12 @@ vrrp_fault(vrrp_t * vrrp)
 #endif
 	{
 		/* Otherwise, we transit to init state */
-		if (vrrp->init_state == VRRP_STATE_BACK) {
+		if (vrrp->base_priority != VRRP_PRIO_OWNER) {
 			vrrp->state = VRRP_STATE_BACK;
 			notify_instance_exec(vrrp, VRRP_STATE_BACK);
 			if (vrrp->preempt_delay)
 				vrrp->preempt_time = timer_add_long(timer_now(), vrrp->preempt_delay);
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 			vrrp_snmp_instance_trap(vrrp);
 #endif
 			vrrp->last_transition = timer_now();
@@ -1074,22 +1110,32 @@ vrrp_read_dispatcher_thread(thread_t * thread)
 	return 0;
 }
 
-/* Script tracking threads */
 static int
 vrrp_script_thread(thread_t * thread)
 {
 	vrrp_script_t *vscript = THREAD_ARG(thread);
-
-	vscript->forcing_termination = false;
+	int ret;
 
 	/* Register next timer tracker */
 	thread_add_timer(thread->master, vrrp_script_thread, vscript,
 			 vscript->interval);
 
+	if (vscript->state != SCRIPT_STATE_IDLE) {
+		/* We don't want the system to be overloaded with scripts that we are executing */
+		log_message(LOG_INFO, "Track script %s is %s, expect idle - skipping run",
+			    vscript->sname, vscript->state == SCRIPT_STATE_RUNNING ? "already running" : "being timed out");
+
+		return 0;
+	}
+
 	/* Execute the script in a child process. Parent returns, child doesn't */
-	return system_call_script(thread->master, vrrp_script_child_thread,
+	ret = system_call_script(thread->master, vrrp_script_child_thread,
 				  vscript, (vscript->timeout) ? vscript->timeout : vscript->interval,
 				  vscript->script, vscript->uid, vscript->gid);
+	if (!ret)
+		vscript->state = SCRIPT_STATE_RUNNING;
+
+	return ret;
 }
 
 static int
@@ -1098,88 +1144,111 @@ vrrp_script_child_thread(thread_t * thread)
 	int wait_status;
 	pid_t pid;
 	vrrp_script_t *vscript = THREAD_ARG(thread);
+	int sig_num;
+	unsigned timeout = 0;
+	char *script_exit_type = NULL;
+	bool script_success;
+	char *reason = NULL;
+	int reason_code;
 
 	if (thread->type == THREAD_CHILD_TIMEOUT) {
 		pid = THREAD_CHILD_PID(thread);
 
-		/* The child hasn't responded. Kill it off. */
-		if (vscript->result > vscript->rise) {
-			vscript->result--;
-		} else {
-			if (vscript->result == vscript->rise)
-				log_message(LOG_INFO, "VRRP_Script(%s) timed out", vscript->sname);
-			vscript->result = 0;
+		if (vscript->state == SCRIPT_STATE_RUNNING) {
+			vscript->state = SCRIPT_STATE_REQUESTING_TERMINATION;
+			sig_num = SIGTERM;
+			timeout = 2;
+		} else if (vscript->state == SCRIPT_STATE_REQUESTING_TERMINATION) {
+			vscript->state = SCRIPT_STATE_FORCING_TERMINATION;
+			sig_num = SIGKILL;
+			timeout = 2;
+		} else if (vscript->state == SCRIPT_STATE_FORCING_TERMINATION) {
+			log_message(LOG_INFO, "Child (PID %d) failed to terminate after kill", pid);
+			sig_num = SIGKILL;
+			timeout = 10;	/* Give it longer to terminate */
 		}
-		vscript->forcing_termination = true;
-		kill(-pid, SIGTERM);
-		thread_add_child(thread->master, vrrp_script_child_timeout_thread,
-				 vscript, pid, 2);
+
+		if (timeout) {
+			/* If kill returns an error, we can't kill the process since either the process has terminated,
+			 * or we don't have permission. If we can't kill it, there is no point trying again. */
+			if (!kill(-pid, sig_num))
+				timeout = 1000;
+		} else if (vscript->state != SCRIPT_STATE_IDLE) {
+			log_message(LOG_INFO, "Child thread pid %d timeout with unknown script state %d", pid, vscript->state);
+			timeout = 10;	/* We need some timeout */
+		}
+
+		if (timeout)
+			thread_add_child(thread->master, vrrp_script_child_thread, vscript, pid, timeout * TIMER_HZ);
+
 		return 0;
 	}
 
 	wait_status = THREAD_CHILD_STATUS(thread);
 
 	if (WIFEXITED(wait_status)) {
-		int status;
-		status = WEXITSTATUS(wait_status);
+		int status = WEXITSTATUS(wait_status);
+
 		if (status == 0) {
 			/* success */
-			if (vscript->result < vscript->rise - 1) {
-				vscript->result++;
-			} else {
-				if (vscript->result < vscript->rise)
-					log_message(LOG_INFO, "VRRP_Script(%s) succeeded", vscript->sname);
-				vscript->result = vscript->rise + vscript->fall - 1;
-			}
+			script_exit_type = "succeeded";
+			script_success = true;
 		} else {
 			/* failure */
-			if (vscript->result > vscript->rise) {
-				vscript->result--;
-			} else {
-				if (vscript->result >= vscript->rise)
-					log_message(LOG_INFO, "VRRP_Script(%s) failed", vscript->sname);
-				vscript->result = 0;
-			}
+			script_exit_type = "failed";
+			script_success = false;
+			reason = "exited with status";
+			reason_code = status;
 		}
 	}
 	else if (WIFSIGNALED(wait_status)) {
-		if (vscript->forcing_termination && WTERMSIG(wait_status) == SIGTERM) {
+		if (vscript->state == SCRIPT_STATE_REQUESTING_TERMINATION && WTERMSIG(wait_status) == SIGTERM) {
 			/* The script terminated due to a SIGTERM, and we sent it a SIGTERM to
 			 * terminate the process. Now make sure any children it created have
 			 * died too. */
 			pid = THREAD_CHILD_PID(thread);
 			kill(-pid, SIGKILL);
 		}
-	}
 
-	vscript->forcing_termination = false;
-
-	return 0;
-}
-
-static int
-vrrp_script_child_timeout_thread(thread_t * thread)
-{
-	pid_t pid;
-	vrrp_script_t *vscript = THREAD_ARG(thread);
-
-	if (thread->type != THREAD_CHILD_TIMEOUT)
-		return 0;
-
-	/* OK, it still hasn't exited. Now really kill it off. */
-	pid = THREAD_CHILD_PID(thread);
-	if (kill(-pid, SIGKILL) < 0) {
-		/* Its possible it finished while we're handing this */
-		if (errno != ESRCH) {
-			DBG("kill error: %s", strerror(errno));
+		/* We treat forced termination as a failure */
+		if ((vscript->state == SCRIPT_STATE_REQUESTING_TERMINATION && WTERMSIG(wait_status) == SIGTERM) ||
+		    (vscript->state == SCRIPT_STATE_FORCING_TERMINATION && (WTERMSIG(wait_status) == SIGKILL || WTERMSIG(wait_status) == SIGTERM)))
+			script_exit_type = "timed_out";
+		else {
+			script_exit_type = "failed";
+			reason = "due to signal";
+			reason_code = WTERMSIG(wait_status);
 		}
-
-		return 0;
+		script_success = false;
 	}
 
-	log_message(LOG_WARNING, "Process [%d] didn't respond to SIGTERM", pid);
+	if (script_exit_type) {
+		if (script_success) {
+			if (vscript->result < vscript->rise - 1) {
+				vscript->result++;
+			} else {
+				if (vscript->result < vscript->rise)	/* i.e. == vscript->rise - 1 */
+					log_message(LOG_INFO, "VRRP_Script(%s) %s", vscript->sname, script_exit_type);
+				vscript->result = vscript->rise + vscript->fall - 1;
+			}
+		} else {
+			if (vscript->result > vscript->rise) {
+				vscript->result--;
+			} else {
+				if (vscript->result == vscript->rise ||
+				    vscript->init_state == SCRIPT_INIT_STATE_INIT) {
+					if (reason)
+						log_message(LOG_INFO, "VRRP_Script(%s) %s (%s %d)", vscript->sname, script_exit_type, reason, reason_code);
+					else
+						log_message(LOG_INFO, "VRRP_Script(%s) %s", vscript->sname, script_exit_type);
+				}
+				vscript->result = 0;
+			}
+		}
+	}
 
-	vscript->forcing_termination = false;
+	vscript->state = SCRIPT_STATE_IDLE;
+	vscript->init_state = SCRIPT_INIT_STATE_DONE;
 
 	return 0;
 }

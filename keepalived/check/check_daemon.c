@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -44,20 +44,38 @@
 #include "memory.h"
 #include "parser.h"
 #include "bitops.h"
-#include "vrrp_netlink.h"
-#include "vrrp_if.h"
+#include "keepalived_netlink.h"
 #ifdef _WITH_SNMP_CHECKER_
   #include "check_snmp.h"
 #endif
 
+/* Global variables */
+bool using_ha_suspend;
+
+/* local variables */
 static char *check_syslog_ident;
+
+static int
+lvs_notify_fifo_script_exit(__attribute__((unused)) thread_t *thread)
+{
+        log_message(LOG_INFO, "lvs notify fifo script terminated");
+ 
+        return 0;
+}
+
 
 /* Daemon stop sequence */
 static void
 stop_check(int status)
 {
+	if (using_ha_suspend)
+		kernel_netlink_close();
+
 	/* Terminate all script process */
 	script_killall(master, SIGTERM);
+
+        /* Remove the notify fifo */
+        notify_fifo_close(&global_data->notify_fifo, &global_data->lvs_notify_fifo);
 
 	/* Destroy master thread */
 	signal_handler_destroy();
@@ -68,7 +86,7 @@ stop_check(int status)
 		clear_services();
 	ipvs_stop();
 #ifdef _WITH_SNMP_CHECKER_
-	if (global_data->enable_snmp_checker)
+	if (global_data && global_data->enable_snmp_checker)
 		check_snmp_agent_close();
 #endif
 
@@ -76,11 +94,10 @@ stop_check(int status)
 	pidfile_rm(checkers_pidfile);
 
 	/* Clean data */
-	free_global_data(global_data);
-	free_check_data(check_data);
-#ifdef _WITH_VRRP_
-	free_interface_queue();
-#endif
+	if (global_data)
+		free_global_data(global_data);
+	if (check_data)
+		free_check_data(check_data);
 	free_parent_mallocs_exit();
 
 	/*
@@ -89,7 +106,11 @@ stop_check(int status)
 	 */
 	log_message(LOG_INFO, "Stopped");
 
+	if (log_file_name)
+		close_log_file();
 	closelog();
+
+	FREE(config_id);
 
 #ifndef _MEM_CHECK_LOG_
 	FREE_PTR(check_syslog_ident);
@@ -97,25 +118,16 @@ stop_check(int status)
 	if (check_syslog_ident)
 		free(check_syslog_ident);
 #endif
+	close_std_fd();
 
 	exit(status);
 }
 
 /* Daemon init sequence */
 static void
-start_check(void)
+start_check(list old_checkers_queue)
 {
-	/* Initialize sub-system */
-	if (ipvs_start() != IPVS_SUCCESS) {
-		stop_check(KEEPALIVED_EXIT_FATAL);
-		return;
-	}
-
 	init_checkers_queue();
-#ifdef _WITH_VRRP_
-	init_interface_queue();
-	kernel_netlink_init();
-#endif
 
 	/* Parse configuration file */
 	global_data = alloc_global_data();
@@ -127,6 +139,13 @@ start_check(void)
 
 	init_global_data(global_data);
 
+	/* fill 'vsg' members of the virtual_server_t structure.
+	 * We must do that after parsing config, because
+	 * vs and vsg declarations may appear in any order,
+	 * but we must do it before validate_check_config().
+	 */
+	link_vsg_to_vs();
+
 	/* Post initializations */
 	if (!validate_check_config()) {
 		stop_check(KEEPALIVED_EXIT_CONFIG);
@@ -136,6 +155,21 @@ start_check(void)
 #ifdef _MEM_CHECK_
 	log_message(LOG_INFO, "Configuration is using : %zu Bytes", mem_allocated);
 #endif
+
+	/* Initialize sub-system if any virtual servers are configured */
+	if ((!LIST_ISEMPTY(check_data->vs) || (reload && !LIST_ISEMPTY(old_check_data->vs))) &&
+	    ipvs_start() != IPVS_SUCCESS) {
+		stop_check(KEEPALIVED_EXIT_FATAL);
+		return;
+	}
+
+        /* Create a notify FIFO if needed, and open it */
+        if (global_data->lvs_notify_fifo.name)
+                notify_fifo_open(&global_data->notify_fifo, &global_data->lvs_notify_fifo, lvs_notify_fifo_script_exit, "lvs_");
+
+	/* Get current active addresses, and start update process */
+	if (using_ha_suspend || __test_bit(LOG_ADDRESS_CHANGES, &debug))
+		kernel_netlink_init();
 
 	/* Remove any entries left over from previous invocation */
 	if (!reload && global_data->lvs_flush)
@@ -147,14 +181,8 @@ start_check(void)
 #endif
 
 	/* SSL load static data & initialize common ctx context */
-	if (!init_ssl_ctx())
+	if (check_data->ssl_required && !init_ssl_ctx())
 		stop_check(KEEPALIVED_EXIT_FATAL);
-
-	/* fill 'vsg' members of the virtual_server_t structure.
-	 * We must do that after parsing config, because
-	 * vs and vsg declarations may appear in any order
-	 */
-	link_vsg_to_vs();
 
 	/* Set the process priority and non swappable if configured */
 	if (global_data->checker_process_priority)
@@ -165,7 +193,7 @@ start_check(void)
 
 	/* Processing differential configuration parsing */
 	if (reload)
-		clear_diff_services();
+		clear_diff_services(old_checkers_queue);
 
 	/* Initialize IPVS topology */
 	if (!init_services())
@@ -177,17 +205,54 @@ start_check(void)
 		dump_check_data(check_data);
 	}
 
-#ifdef _WITH_VRRP_
-	/* Initialize linkbeat */
-	init_interface_linkbeat();
-#endif
-
 	/* Register checkers thread */
 	register_checkers_thread();
 }
 
-/* Reload handler */
-static int reload_check_thread(thread_t *);
+/* Reload thread */
+static int
+reload_check_thread(__attribute__((unused)) thread_t * thread)
+{
+	list old_checkers_queue;
+
+	/* set the reloading flag */
+	SET_RELOAD;
+
+	log_message(LOG_INFO, "Got SIGHUP, reloading checker configuration");
+
+	/* Terminate all script process */
+	script_killall(master, SIGTERM);
+
+        /* Remove the notify fifo - we don't know if it will be the same after a reload */
+        notify_fifo_close(&global_data->notify_fifo, &global_data->lvs_notify_fifo);
+
+	/* Destroy master thread */
+	if (using_ha_suspend)
+		kernel_netlink_close();
+	thread_cleanup_master(master);
+	free_global_data(global_data);
+
+	/* Save previous checker data */
+	old_checkers_queue = checkers_queue;
+	checkers_queue = NULL;
+
+	free_ssl();
+	ipvs_stop();
+
+	/* Save previous conf data */
+	old_check_data = check_data;
+	check_data = NULL;
+
+	/* Reload the conf */
+	start_check(old_checkers_queue);
+
+	/* free backup data */
+	free_check_data(old_check_data);
+	free_list(&old_checkers_queue);
+	UNSET_RELOAD;
+
+	return 0;
+}
 
 static void
 sighup_check(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
@@ -207,51 +272,11 @@ sigend_check(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 static void
 check_signal_init(void)
 {
-	signal_handler_init(0);
+	signal_handler_child_clear();
 	signal_set(SIGHUP, sighup_check, NULL);
 	signal_set(SIGINT, sigend_check, NULL);
 	signal_set(SIGTERM, sigend_check, NULL);
 	signal_ignore(SIGPIPE);
-}
-
-/* Reload thread */
-static int
-reload_check_thread(__attribute__((unused)) thread_t * thread)
-{
-	/* set the reloading flag */
-	SET_RELOAD;
-
-	log_message(LOG_INFO, "Got SIGHUP, reloading checker configuration");
-
-	/* Terminate all script process */
-	script_killall(master, SIGTERM);
-
-	/* Destroy master thread */
-#ifdef _WITH_VRRP_
-	kernel_netlink_close();
-#endif
-	thread_cleanup_master(master);
-	free_global_data(global_data);
-
-	free_checkers_queue();
-#ifdef _WITH_VRRP_
-	free_interface_queue();
-#endif
-	free_ssl();
-	ipvs_stop();
-
-	/* Save previous conf data */
-	old_check_data = check_data;
-	check_data = NULL;
-
-	/* Reload the conf */
-	start_check();
-
-	/* free backup data */
-	free_check_data(old_check_data);
-	UNSET_RELOAD;
-
-	return 0;
 }
 
 /* CHECK Child respawning thread */
@@ -292,6 +317,9 @@ start_check_child(void)
 	char *syslog_ident;
 
 	/* Initialize child process */
+	if (log_file_name)
+		flush_log_file();
+
 	pid = fork();
 
 	if (pid < 0) {
@@ -310,6 +338,12 @@ start_check_child(void)
 	}
 	prctl(PR_SET_PDEATHSIG, SIGTERM);
 
+	/* Clear any child finder functions set in parent */
+	set_child_finder_name(NULL);
+	set_child_finder(NULL, NULL, NULL, NULL, NULL, 0);	/* Currently these won't be set */
+
+	prog_type = PROG_TYPE_CHECKER;
+
 	if ((instance_name
 #if HAVE_DECL_CLONE_NEWNET
 			   || network_namespace
@@ -321,8 +355,12 @@ start_check_child(void)
 		syslog_ident = PROG_CHECK;
 
 	/* Opening local CHECK syslog channel */
-	openlog(syslog_ident, LOG_PID | ((__test_bit(LOG_CONSOLE_BIT, &debug)) ? LOG_CONS : 0)
-			    , (log_facility==LOG_DAEMON) ? LOG_LOCAL2 : log_facility);
+	if (!__test_bit(NO_SYSLOG_BIT, &debug))
+		openlog(syslog_ident, LOG_PID | ((__test_bit(LOG_CONSOLE_BIT, &debug)) ? LOG_CONS : 0)
+				    , (log_facility==LOG_DAEMON) ? LOG_LOCAL2 : log_facility);
+
+	if (log_file_name)
+		open_log_file(log_file_name, "check", network_namespace, instance_name);
 
 #ifdef _MEM_CHECK_
 	mem_log_init(PROG_CHECK, "Healthcheck child process");
@@ -351,7 +389,7 @@ start_check_child(void)
 	check_signal_init();
 
 	/* Start Healthcheck daemon */
-	start_check();
+	start_check(NULL);
 
 	/* Launch the scheduling I/O multiplexer */
 	launch_scheduler();

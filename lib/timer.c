@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -82,7 +82,7 @@ timer_add(timeval_t a, timeval_t b)
 	ret.tv_usec = a.tv_usec + b.tv_usec;
 	ret.tv_sec = a.tv_sec + b.tv_sec;
 
-	if (ret.tv_usec >= TIMER_HZ) {
+	if (ret.tv_usec >= (int)TIMER_HZ) {
 		ret.tv_sec++;
 		ret.tv_usec -= TIMER_HZ;
 	}
@@ -108,7 +108,7 @@ timer_add_long(timeval_t a, unsigned long b)
 	ret.tv_usec = a.tv_usec + (int)(b % TIMER_HZ);
 	ret.tv_sec = a.tv_sec + (int)(b / TIMER_HZ);
 
-	if (ret.tv_usec >= TIMER_HZ) {
+	if (ret.tv_usec >= (int)TIMER_HZ) {
 		ret.tv_sec++;
 		ret.tv_usec -= TIMER_HZ;
 	}

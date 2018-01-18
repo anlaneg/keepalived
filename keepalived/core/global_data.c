@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -31,7 +31,9 @@
 #include "list.h"
 #include "logger.h"
 #include "utils.h"
+#ifdef _WITH_VRRP_
 #include "vrrp.h"
+#endif
 #include "main.h"
 
 /* global vars */
@@ -93,10 +95,9 @@ set_vrrp_defaults(data_t * data)
 	data->vrrp_garp_lower_prio_delay = PARAMETER_UNSET;
 	data->vrrp_garp_lower_prio_rep = PARAMETER_UNSET;
 	data->vrrp_lower_prio_no_advert = false;
+	data->vrrp_higher_prio_send_advert = false;
 	data->vrrp_version = VRRP_VERSION_2;
 	strcpy(data->vrrp_iptables_inchain, "INPUT");
-	data->block_ipv4 = false;
-	data->block_ipv6 = false;
 #ifdef _HAVE_LIBIPSET_
 	data->using_ipsets = true;
 	strcpy(data->vrrp_ipset_address, "keepalived");
@@ -147,10 +148,17 @@ alloc_global_data(void)
 	set_default_mcast_group(new);
 	set_vrrp_defaults(new);
 #endif
+	new->notify_fifo.fd = -1;
+#ifdef _WITH_VRRP_
+	new->vrrp_notify_fifo.fd = -1;
+#endif
+#ifdef _WITH_LVS_
+	new->lvs_notify_fifo.fd = -1;
+#endif
 
 #ifdef _WITH_SNMP_
 	if (snmp) {
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 		new->enable_snmp_keepalived = true;
 #endif
 #ifdef _WITH_SNMP_RFCV2_
@@ -171,9 +179,11 @@ alloc_global_data(void)
 #endif
 
 #ifdef _WITH_LVS_
+#ifdef _WITH_VRRP_
 	new->lvs_syncd.syncid = PARAMETER_UNSET;
 #ifdef _HAVE_IPVS_SYNCD_ATTRIBUTES_
 	new->lvs_syncd.mcast_group.ss_family = AF_UNSPEC;
+#endif
 #endif
 #endif
 
@@ -184,12 +194,23 @@ void
 init_global_data(data_t * data)
 {
 	char* local_name = NULL;
+	char unknown_name[] = "[unknown]";
+	bool using_unknown_name = false;
 
 	if (!data->router_id ||
 	    (data->smtp_server.ss_family &&
 	     (!data->smtp_helo_name ||
-	      !data->email_from)))
+	      !data->email_from))) {
 		local_name = get_local_name();
+
+		/* If for some reason get_local_name() fails, we need to have
+		 * some string in local_name, otherwise keepalived can segfault */
+		if (!local_name) {
+			local_name = MALLOC(sizeof(unknown_name));
+			strcpy(local_name, unknown_name);
+			using_unknown_name = true;
+		}
+	}
 
 	if (!data->router_id)
 		set_default_router_id(data, local_name);
@@ -198,7 +219,7 @@ init_global_data(data_t * data)
 		if (!data->smtp_connection_to)
 			set_default_smtp_connection_timeout(data);
 
-		if (local_name) {
+		if (!using_unknown_name) {
 			if (!data->email_from)
 				set_default_email_from(data, local_name);
 
@@ -208,6 +229,55 @@ init_global_data(data_t * data)
 			}
 		}
 	}
+
+	/* Check that there aren't conflicts with the notify FIFOs */
+#ifdef _WITH_VRRP_
+	/* If the global and vrrp notify FIFOs are the same, then data will be
+	 * duplicated on the FIFO */
+	if (
+#ifndef _DEBUG_
+	    prog_type == PROG_TYPE_VRRP &&
+#endif
+	    data->notify_fifo.name && data->vrrp_notify_fifo.name &&
+	    !strcmp(data->notify_fifo.name, data->vrrp_notify_fifo.name)) {
+		log_message(LOG_INFO, "notify FIFO %s has been specified for global and vrrp FIFO - ignoring vrrp FIFO", data->vrrp_notify_fifo.name);
+		FREE_PTR(data->vrrp_notify_fifo.name);
+		data->vrrp_notify_fifo.name = NULL;
+		free_notify_script(&data->vrrp_notify_fifo.script);
+	}
+#endif
+#ifdef _WITH_LVS_
+	/* If the global and LVS notify FIFOs are the same, then data will be
+	 * duplicated on the FIFO */
+#ifndef _DEBUG_
+	if (prog_type == PROG_TYPE_CHECKER)
+#endif
+	{
+		if (data->notify_fifo.name && data->lvs_notify_fifo.name &&
+		    !strcmp(data->notify_fifo.name, data->lvs_notify_fifo.name)) {
+			log_message(LOG_INFO, "notify FIFO %s has been specified for global and LVS FIFO - ignoring LVS FIFO", data->lvs_notify_fifo.name);
+			FREE_PTR(data->lvs_notify_fifo.name);
+			data->lvs_notify_fifo.name = NULL;
+			free_notify_script(&data->lvs_notify_fifo.script);
+		}
+
+#ifdef _WITH_VRRP_
+		/* If LVS and VRRP use the same FIFO, they cannot both have a script for the FIFO.
+		 * Use the VRRP script and ignore the LVS script */
+		if (data->lvs_notify_fifo.name && data->vrrp_notify_fifo.name &&
+		    !strcmp(data->lvs_notify_fifo.name, data->vrrp_notify_fifo.name) &&
+		    data->lvs_notify_fifo.script &&
+		    data->vrrp_notify_fifo.script) {
+			log_message(LOG_INFO, "LVS notify FIFO and vrrp FIFO are the same both with scripts - ignoring LVS FIFO script");
+			free_notify_script(&data->lvs_notify_fifo.script);
+		}
+
+		/* If there is a script for global notify FIFO, it must only be run once, so let VRRP run it */
+		if (data->notify_fifo.script)
+			free_notify_script(&data->notify_fifo.script);
+#endif
+	}
+#endif
 
 	FREE_PTR(local_name);
 }
@@ -222,9 +292,19 @@ free_global_data(data_t * data)
 #ifdef _WITH_SNMP_
 	FREE_PTR(data->snmp_socket);
 #endif
-#ifdef _WITH_LVS_
+#if defined _WITH_LVS_ && defined _WITH_VRRP_
 	FREE_PTR(data->lvs_syncd.ifname);
 	FREE_PTR(data->lvs_syncd.vrrp_name);
+#endif
+	FREE_PTR(data->notify_fifo.name);
+	free_notify_script(&data->notify_fifo.script);
+#ifdef _WITH_VRRP_
+	FREE_PTR(data->vrrp_notify_fifo.name);
+	free_notify_script(&data->vrrp_notify_fifo.script);
+#endif
+#ifdef _WITH_LVS_
+	FREE_PTR(data->lvs_notify_fifo.name);
+	free_notify_script(&data->lvs_notify_fifo.script);
 #endif
 #if HAVE_DECL_CLONE_NEWNET
 	if (!reload)
@@ -245,7 +325,7 @@ dump_global_data(data_t * data)
 		log_message(LOG_INFO, " Router ID = %s", data->router_id);
 	if (data->smtp_server.ss_family) {
 		log_message(LOG_INFO, " Smtp server = %s", inet_sockaddrtos(&data->smtp_server));
-		log_message(LOG_INFO, " Smtp server port = %u", inet_sockaddrport(&data->smtp_server));
+		log_message(LOG_INFO, " Smtp server port = %u", ntohs(inet_sockaddrport(&data->smtp_server)));
 	}
 	if (data->smtp_helo_name)
 		log_message(LOG_INFO, " Smtp HELO name = %s" , data->smtp_helo_name);
@@ -257,7 +337,6 @@ dump_global_data(data_t * data)
 				    , data->email_from);
 		dump_list(data->email);
 	}
-	log_message(LOG_INFO, " Default interface = %s", data->default_ifp ? data->default_ifp->ifname : DFLT_INT);
 #ifdef _WITH_LVS_
 	if (data->lvs_tcp_timeout)
 		log_message(LOG_INFO, " LVS TCP timeout = %d", data->lvs_tcp_timeout);
@@ -265,7 +344,8 @@ dump_global_data(data_t * data)
 		log_message(LOG_INFO, " LVS TCP FIN timeout = %d", data->lvs_tcpfin_timeout);
 	if (data->lvs_udp_timeout)
 		log_message(LOG_INFO, " LVS TCP timeout = %d", data->lvs_udp_timeout);
-#ifdef _WITH_LVS_
+#ifdef _WITH_VRRP_
+	log_message(LOG_INFO, " Default interface = %s", data->default_ifp ? data->default_ifp->ifname : DFLT_INT);
 	if (data->lvs_syncd.vrrp) {
 		log_message(LOG_INFO, " LVS syncd vrrp instance = %s"
 				    , data->lvs_syncd.vrrp->iname);
@@ -288,6 +368,34 @@ dump_global_data(data_t * data)
 #endif
 	log_message(LOG_INFO, " LVS flush = %s", data->lvs_flush ? "true" : "false");
 #endif
+	if (data->notify_fifo.name) {
+		log_message(LOG_INFO, " Global notify fifo = %s", data->notify_fifo.name);
+		if (data->notify_fifo.script)
+			log_message(LOG_INFO, " Global notify fifo script = %s uid:gid %d:%d",
+				    data->notify_fifo.script->name,
+				    data->notify_fifo.script->uid,
+				    data->notify_fifo.script->gid);
+	}
+#ifdef _WITH_VRRP_
+	if (data->vrrp_notify_fifo.name) {
+		log_message(LOG_INFO, " VRRP notify fifo = %s", data->vrrp_notify_fifo.name);
+		if (data->vrrp_notify_fifo.script)
+			log_message(LOG_INFO, " VRRP notify fifo script = %s uid:gid %d:%d",
+				    data->vrrp_notify_fifo.script->name,
+				    data->vrrp_notify_fifo.script->uid,
+				    data->vrrp_notify_fifo.script->gid);
+	}
+#endif
+#ifdef _WITH_LVS_
+	if (data->lvs_notify_fifo.name) {
+		log_message(LOG_INFO, " LVS notify fifo = %s", data->lvs_notify_fifo.name);
+		if (data->lvs_notify_fifo.script)
+			log_message(LOG_INFO, " LVS notify fifo script = %s uid:gid %d:%d",
+				    data->lvs_notify_fifo.script->name,
+				    data->lvs_notify_fifo.script->uid,
+				    data->lvs_notify_fifo.script->gid);
+	}
+#endif
 #ifdef _WITH_VRRP_
 	if (data->vrrp_mcast_group4.ss_family) {
 		log_message(LOG_INFO, " VRRP IPv4 mcast group = %s"
@@ -306,6 +414,7 @@ dump_global_data(data_t * data)
 	log_message(LOG_INFO, " Gratuitous ARP lower priority delay = %d", data->vrrp_garp_lower_prio_delay / TIMER_HZ);
 	log_message(LOG_INFO, " Gratuitous ARP lower priority repeat = %d", data->vrrp_garp_lower_prio_rep);
 	log_message(LOG_INFO, " Send advert after receive lower priority advert = %s", data->vrrp_lower_prio_no_advert ? "false" : "true");
+	log_message(LOG_INFO, " Send advert after receive higher priority advert = %s", data->vrrp_higher_prio_send_advert ? "true" : "false");
 	log_message(LOG_INFO, " Gratuitous ARP interval = %d", data->vrrp_garp_interval);
 	log_message(LOG_INFO, " Gratuitous NA interval = %d", data->vrrp_gna_interval);
 	log_message(LOG_INFO, " VRRP default protocol version = %d", data->vrrp_version);
@@ -333,7 +442,7 @@ dump_global_data(data_t * data)
 	log_message(LOG_INFO, " Checker process priority = %d", data->checker_process_priority);
 	log_message(LOG_INFO, " Checker don't swap = %s", data->checker_no_swap ? "true" : "false");
 #endif
-#ifdef _WITH_SNMP_KEEPALIVED_
+#ifdef _WITH_SNMP_VRRP_
 	log_message(LOG_INFO, " SNMP keepalived %s", data->enable_snmp_keepalived ? "enabled" : "disabled");
 #endif
 #ifdef _WITH_SNMP_CHECKER_
@@ -354,6 +463,7 @@ dump_global_data(data_t * data)
 #endif
 #ifdef _WITH_DBUS_
 	log_message(LOG_INFO, " DBus %s", data->enable_dbus ? "enabled" : "disabled");
+	log_message(LOG_INFO, " DBus service name = %s", data->dbus_service_name);
 #endif
 	log_message(LOG_INFO, " Script security %s", data->script_security ? "enabled" : "disabled");
 	log_message(LOG_INFO, " Default script uid:gid %d:%d", default_script_uid, default_script_gid);

@@ -22,12 +22,26 @@ IMPORTS
         FROM SNMPv2-TC;
 
 keepalived MODULE-IDENTITY
-     LAST-UPDATED "201611260000Z"
+     LAST-UPDATED "201709150000Z"
      ORGANIZATION "Keepalived"
      CONTACT-INFO "http://www.keepalived.org"
      DESCRIPTION
         "This MIB describes objects used by keepalived, both
          for VRRP and health checker."
+     REVISION "201709150000Z"
+     DESCRIPTION "add sctp and none as virtual server protocol types"
+     REVISION "201708100000Z"
+     DESCRIPTION "virtualhost config to real server"
+     REVISION "201707220001Z"
+     DESCRIPTION "add default weight setting on a virtual server"
+     REVISION "201707220000Z"
+     DESCRIPTION "improve flexibility of checker configuration"
+     REVISION "201704110001Z"
+     DESCRIPTION "add real server forwarding method"
+     REVISION "201704110000Z"
+     DESCRIPTION "add fo and ovf load balancing types"
+     REVISION "201702190000Z"
+     DESCRIPTION "add ip rule/route uid support"
      REVISION "201611260000Z"
      DESCRIPTION "add initfailed state for scripts"
      REVISION "201610180000Z"
@@ -1684,7 +1698,9 @@ VrrpRuleEntry ::= SEQUENCE {
     vrrpRuleSuppressPrefixLen Unsigned32,
     vrrpRuleSuppressGroup DisplayString,
     vrrpRuleTunnelIdHigh Unsigned32,
-    vrrpRuleTunnelIdLow Unsigned32
+    vrrpRuleTunnelIdLow Unsigned32,
+    vrrpRuleUidRangeStart Unsigned32,
+    vrrpRuleUidRangeEnd Unsigned32
 }
 
 vrrpRuleIndex OBJECT-TYPE
@@ -1918,6 +1934,22 @@ vrrpRuleTunnelIdLow OBJECT-TYPE
     DESCRIPTION
         "Rule tunnel-id high 32 bits."
     ::= { vrrpRuleEntry 29 }
+
+vrrpRuleUidRangeStart OBJECT-TYPE
+    SYNTAX Unsigned32
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Rule Uid range start."
+    ::= { vrrpRuleEntry 30 }
+
+vrrpRuleUidRangeEnd OBJECT-TYPE
+    SYNTAX Unsigned32
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Rule Uid range end."
+    ::= { vrrpRuleEntry 31 }
 
 -- VRRP scripts
 -- see vrrp_track.h
@@ -2281,7 +2313,12 @@ VirtualServerEntry ::= SEQUENCE {
     virtualServerHashed TruthValue,
     virtualServerSHFallback TruthValue,
     virtualServerSHPort TruthValue,
-    virtualServerSched3 TruthValue
+    virtualServerSched3 TruthValue,
+    virtualServerActionWhenDown INTEGER,
+    virtualServerRetry Unsigned32,
+    virtualServerDelayBeforeRetry Unsigned32,
+    virtualServerWarmup Unsigned32,
+    virtualServerWeight INTEGER
 }
 
 virtualServerIndex OBJECT-TYPE
@@ -2351,7 +2388,7 @@ virtualServerPort OBJECT-TYPE
     ::= { virtualServerEntry 7 }
 
 virtualServerProtocol OBJECT-TYPE
-    SYNTAX INTEGER { tcp(1), udp(2) }
+    SYNTAX INTEGER { tcp(1), udp(2), sctp(3), none(4) }
     MAX-ACCESS read-only
     STATUS current
     DESCRIPTION
@@ -2360,7 +2397,7 @@ virtualServerProtocol OBJECT-TYPE
 
 virtualServerLoadBalancingAlgo OBJECT-TYPE
     SYNTAX INTEGER {
-        rr(1),
+    rr(1),
     wrr(2),
     lc(3),
     wlc(4),
@@ -2370,6 +2407,8 @@ virtualServerLoadBalancingAlgo OBJECT-TYPE
     sh(8),
     sed(9),
     nq(10),
+    fo(11),
+    ovf(12),
     unknown(99)
     }
     MAX-ACCESS read-only
@@ -2379,12 +2418,13 @@ virtualServerLoadBalancingAlgo OBJECT-TYPE
         for this virtual server."
     ::= { virtualServerEntry 9 }
 
+-- Note: this object is misnamed. It should be virtualServerForwardingMethod
 virtualServerLoadBalancingKind OBJECT-TYPE
     SYNTAX INTEGER { nat(1), dr(2), tun(3) }
     MAX-ACCESS read-only
     STATUS current
     DESCRIPTION
-        "Forwarding method to use for this virtual server."
+        "Default forwarding method to use for this virtual server."
     ::= { virtualServerEntry 10 }
 
 virtualServerStatus OBJECT-TYPE
@@ -2783,6 +2823,48 @@ virtualServerSched3 OBJECT-TYPE
         "If set to true(1), scheduler flag 3 set."
     ::= { virtualServerEntry 55 }
 
+virtualServerActionWhenDown OBJECT-TYPE
+    SYNTAX INTEGER { remove(1), inhibit(2) }
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "What action is performed when the real servers are down. Its weight
+        can be set to 0 (inhibit) or it can be removed from the pool."
+    ::= { virtualServerEntry 56 }
+
+virtualServerRetry OBJECT-TYPE
+    SYNTAX Unsigned32
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Default number of retries of checker before marking failed."
+    ::= { virtualServerEntry 57 }
+
+virtualServerDelayBeforeRetry OBJECT-TYPE
+    SYNTAX Unsigned32
+    UNITS "seconds"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Default number of seconds between retrying a checker ofter it has failed."
+    ::= { virtualServerEntry 58 }
+
+virtualServerWarmup OBJECT-TYPE
+    SYNTAX Unsigned32
+    UNITS "seconds"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Maximum number of seconds to delay before running checker."
+    ::= { virtualServerEntry 59 }
+
+virtualServerWeight OBJECT-TYPE
+    SYNTAX Integer32
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Default wieght for each real server."
+    ::= { virtualServerEntry 60 }
 
 -- real servers
 
@@ -2842,7 +2924,14 @@ RealServerEntry ::= SEQUENCE {
     realServerRateInBPSLow Unsigned32,
     realServerRateInBPSHigh Unsigned32,
     realServerRateOutBPSLow Unsigned32,
-    realServerRateOutBPSHigh Unsigned32
+    realServerRateOutBPSHigh Unsigned32,
+    realServerForwardingMethod INTEGER,
+    realServerVirtualHost DisplayString,
+    realServerAlpha INTEGER,
+    realServerRetry Unsigned32,
+    realServerDelayBeforeRetry Unsigned32,
+    realServerWarmup Unsigned32,
+    realServerDelayLoop Unsigned32
 }
 
 realServerIndex OBJECT-TYPE
@@ -3195,6 +3284,65 @@ realServerRateOutBPSHigh OBJECT-TYPE
         "Current outgoing rate for this real server.
 	Together with realServerRateOutBPSLow composes 64-bit number."
     ::= { realServerEntry 39 }
+
+realServerForwardingMethod OBJECT-TYPE
+    SYNTAX INTEGER { nat(1), dr(2), tun(3) }
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Forwarding method to use for this real server."
+    ::= { realServerEntry 40 }
+
+realServerVirtualHost OBJECT-TYPE
+    SYNTAX DisplayString
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Virtualhost of this real server for HTTP like requests."
+    ::= { realServerEntry 41 }
+
+realServerAlpha OBJECT-TYPE
+    SYNTAX INTEGER { enabled(1), disabled(2) }
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Is alpha mode enabled?"
+    ::= { realServerEntry 42 }
+
+realServerRetry OBJECT-TYPE
+    SYNTAX Unsigned32
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Default number of retries of checker before marking failed."
+    ::= { realServerEntry 43 }
+
+realServerDelayBeforeRetry OBJECT-TYPE
+    SYNTAX Unsigned32
+    UNITS "seconds"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Default number of seconds between retrying a checker ofter it has failed."
+    ::= { realServerEntry 44 }
+
+realServerWarmup OBJECT-TYPE
+    SYNTAX Unsigned32
+    UNITS "seconds"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Maximum number of seconds to delay before running checker."
+    ::= { realServerEntry 45 }
+
+realServerDelayLoop OBJECT-TYPE
+    SYNTAX Unsigned32
+    UNITS "seconds"
+    MAX-ACCESS read-only
+    STATUS current
+    DESCRIPTION
+        "Delay in seconds between two checks."
+    ::= { realServerEntry 46 }
 
 lvsSyncDaemon    OBJECT IDENTIFIER ::= { check 6 }
 
@@ -3578,7 +3726,9 @@ vrrpInstanceGroup OBJECT-GROUP
     vrrpRuleSuppressPrefixLen,
     vrrpRuleSuppressGroup,
     vrrpRuleTunnelIdHigh,
-    vrrpRuleTunnelIdLow
+    vrrpRuleTunnelIdLow,
+    vrrpRuleUidRangeStart,
+    vrrpRuleUidRangeEnd
     }
     STATUS current
     DESCRIPTION
@@ -3705,7 +3855,12 @@ virtualServerGroup OBJECT-GROUP
     virtualServerHashed,
     virtualServerSHFallback,
     virtualServerSHPort,
-    virtualServerSched3
+    virtualServerSched3,
+    virtualServerActionWhenDown,
+    virtualServerRetry,
+    virtualServerDelayBeforeRetry,
+    virtualServerWarmup,
+    virtualServerWeight
     }
     STATUS current
     DESCRIPTION
@@ -3751,7 +3906,14 @@ realServerGroup OBJECT-GROUP
     realServerRateInBPSLow,
     realServerRateInBPSHigh,
     realServerRateOutBPSLow,
-    realServerRateOutBPSHigh
+    realServerRateOutBPSHigh,
+    realServerForwardingMethod,
+    realServerVirtualHost,
+    realServerAlpha,
+    realServerRetry,
+    realServerDelayBeforeRetry,
+    realServerWarmup,
+    realServerDelayLoop
     }
     STATUS current
     DESCRIPTION

@@ -1,6 +1,8 @@
 *.orig
+*.rej
 *.o
 *.a
+README
 bin/
 keepalived.spec
 *~
@@ -35,3 +37,9 @@ stamp-h?
 # lib/config.h.in
 # Makefile.in
 # /configure
+
+# For snap builds
+parts/
+prime/
+stage/
+keepalived*.snap

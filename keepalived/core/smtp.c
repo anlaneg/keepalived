@@ -19,7 +19,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -28,7 +28,6 @@
 
 #include "smtp.h"
 #include "global_data.h"
-#include "check_data.h"
 #include "scheduler.h"
 #include "memory.h"
 #include "list.h"
@@ -36,6 +35,9 @@
 #include "utils.h"
 #if !HAVE_DECL_SOCK_CLOEXEC
 #include "old_socket.h"
+#endif
+#ifdef _WITH_LVS_
+#include "check_api.h"
 #endif
 
 /* SMTP FSM definition */
@@ -604,8 +606,18 @@ smtp_connect(smtp_t * smtp)
 
 /* Main entry point */
 void
-smtp_alert(real_server_t * rs, vrrp_t * vrrp,
-	   vrrp_sgroup_t * vgroup, const char *subject, const char *body)
+smtp_alert(
+#ifndef _WITH_LVS_
+	   __attribute__((unused)) void *dummy1,
+#else
+	   checker_t* checker,
+#endif
+#ifndef _WITH_VRRP_
+	   __attribute__((unused)) void *dummy2, __attribute__((unused)) void *dummy3,
+#else
+	   vrrp_t * vrrp, vrrp_sgroup_t * vgroup,
+#endif
+	   const char *subject, const char *body)
 {
 	smtp_t *smtp;
 
@@ -619,12 +631,17 @@ smtp_alert(real_server_t * rs, vrrp_t * vrrp,
 		smtp->email_to = (char *) MALLOC(SMTP_BUFFER_MAX);
 
 		/* format subject if rserver is specified */
-		if (rs) {
-			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] Realserver %s - %s"
-					      , global_data->router_id
-					      , FMT_RS(rs)
-					      , subject);
-		} else if (vrrp)
+#ifdef _WITH_LVS_
+		if (checker) {
+			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] Realserver %s - %s",
+						global_data->router_id,
+						FMT_RS(checker->rs, checker->vs),
+						subject);
+		}
+		else
+#endif
+#ifdef _WITH_VRRP_
+		if (vrrp)
 			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] VRRP Instance %s - %s"
 					      , global_data->router_id
 					      , vrrp->iname
@@ -634,15 +651,41 @@ smtp_alert(real_server_t * rs, vrrp_t * vrrp,
 					      , global_data->router_id
 					      , vgroup->gname
 					      , subject);
-		else if (global_data->router_id)
+		else
+#endif
+		if (global_data->router_id)
 			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] %s"
 					      , global_data->router_id
 					      , subject);
 		else
 			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "%s", subject);
 
-		strncpy(smtp->body, body, MAX_BODY_LENGTH);
+		strncpy(smtp->body, body, MAX_BODY_LENGTH - 1);
+		smtp->body[MAX_BODY_LENGTH - 1]= '\0';
+
 		build_to_header_rcpt_addrs(smtp);
+
+#ifdef _SMTP_ALERT_DEBUG_
+		FILE *fp = fopen("/tmp/smtp-alert.log", "a");
+		struct tm tm;
+		char time_buf[25];
+		int time_buf_len;
+
+		localtime_r(&time_now.tv_sec, &tm);
+		time_buf_len = strftime(time_buf, sizeof time_buf, "%a %b %e %X %Y", &tm);
+
+		fprintf(fp, "%s: %s -> %s\n"
+			    "%*sSubject: %s\n"
+			    "%*sBody:    %s\n\n",
+			    time_buf, global_data->email_from, smtp->email_to,
+			    time_buf_len - 7, "", smtp->subject,
+			    time_buf_len - 7, "", smtp->body);
+
+		fclose(fp);
+
+		free_smtp_all(smtp);
+		return;
+#endif
 
 		smtp_connect(smtp);
 	}

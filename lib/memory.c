@@ -19,7 +19,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #include "config.h"
@@ -144,7 +144,10 @@ keepalived_malloc(size_t size, char *file, char *function, int line)
 	if (i == number_alloc_list)
 		number_alloc_list++;
 
-	assert(number_alloc_list < MAX_ALLOC_LIST);
+	if (number_alloc_list >= MAX_ALLOC_LIST) {
+		log_message(LOG_INFO, "number_alloc_list = %d exceeds MAX_ALLOC_LIST. Please increase value in lib/memory.h", number_alloc_list);
+		assert(number_alloc_list < MAX_ALLOC_LIST);
+	}
 
 	alloc_list[i].ptr = buf;
 	alloc_list[i].size = size;

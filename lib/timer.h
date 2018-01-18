@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _TIMER_H
@@ -34,6 +34,7 @@ extern timeval_t time_now;
 /* Some defines */
 #define TIME_MAX_FORWARD_US	2000000U
 #define TIMER_HZ		1000000U
+#define TIMER_HZ_FLOAT		1000000.0
 #define TIMER_CENTI_HZ		10000U
 #define TIMER_MAX_SEC		1000U
 #define TIMER_NEVER		ULONG_MAX

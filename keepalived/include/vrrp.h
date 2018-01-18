@@ -18,7 +18,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _VRRP_H
@@ -26,11 +26,15 @@
 
 /* system include */
 #include <unistd.h>
+#include <stdint.h>
 #include <stdbool.h>
+#include <net/if.h>
 
 /* local include */
 #include "vrrp_ipaddress.h"
+#ifdef _WITH_VRRP_AUTH_
 #include "vrrp_ipsecah.h"
+#endif
 #include "vrrp_if.h"
 #include "vrrp_track.h"
 #include "timer.h"
@@ -128,8 +132,10 @@ typedef struct _vrrp_stats {
 	uint64_t	addr_list_err;
 
 	uint32_t	invalid_authtype;
+#ifdef _WITH_VRRP_AUTH_
 	uint32_t	authtype_mismatch;
 	uint32_t	auth_failure;
+#endif
 
 	uint64_t	pri_zero_rcvd;
 	uint64_t	pri_zero_sent;
@@ -145,6 +151,17 @@ typedef struct _vrrp_stats {
 #endif
 #endif
 } vrrp_stats;
+
+#ifdef _WITH_UNICAST_CHKSUM_COMPAT_
+/* Whether we are using v1.3.6 and earlier VRRPv3 unicast checksums */
+typedef enum chksum_compatibility {
+	CHKSUM_COMPATIBILITY_NONE,		/* Default setting, will revert to old if receive advert with old */
+	CHKSUM_COMPATIBILITY_NEVER,		/* Do not auto set old checksum mode */
+	CHKSUM_COMPATIBILITY_MIN_COMPAT,	/* Values before this are new chksum, values after are old */
+	CHKSUM_COMPATIBILITY_CONFIG,		/* Configuration specifies old chksum */
+	CHKSUM_COMPATIBILITY_AUTO,		/* Use old chksum mode due to received advert with old mode */
+} chksum_compatibility_t;
+#endif
 
 /* parameters per virtual router -- rfc2338.6.1.2 */
 typedef struct _vrrp_t {
@@ -167,6 +184,9 @@ typedef struct _vrrp_t {
 	struct sockaddr_storage	saddr;			/* Src IP address to use in VRRP IP header */
 	struct sockaddr_storage	pkt_saddr;		/* Src IP address received in VRRP IP header */
 	list			unicast_peer;		/* List of Unicast peer to send advert to */
+#ifdef _WITH_UNICAST_CHKSUM_COMPAT_
+	chksum_compatibility_t	unicast_chksum_compat;	/* Whether v1.3.6 and earlier chksum is used */
+#endif
 	struct sockaddr_storage master_saddr;		/* Store last heard Master address */
 	uint8_t			master_priority;	/* Store last heard priority */
 	timeval_t		last_transition;	/* Store transition time */
@@ -179,8 +199,8 @@ typedef struct _vrrp_t {
 	bool			garp_pending;		/* Are there gratuitous ARP messages still to be sent */
 	bool			gna_pending;		/* Are there gratuitous NA messages still to be sent */
 	unsigned		garp_lower_prio_rep;	/* Number of ARP messages to send at a time */
-	unsigned		lower_prio_no_advert;	/* Don't send advert after lower prio
-							 * advert received */
+	unsigned		lower_prio_no_advert;	/* Don't send advert after lower prio advert received */
+	unsigned		higher_prio_send_advert; /* Send advert after higher prio advert received */
 	uint8_t			vrid;			/* virtual id. from 1(!) to 255 */
 	uint8_t			base_priority;		/* configured priority value */
 	uint8_t			effective_priority;	/* effective priority value */
@@ -209,8 +229,10 @@ typedef struct _vrrp_t {
 							 * prio is allowed.  0 means no delay.
 							 */
 	timeval_t		preempt_time;		/* Time after which preemption can happen */
-	int			state;			/* internal state (init/backup/master) */
+	int			state;			/* internal state (init/backup/master/fault) */
+#ifdef _WITH_SNMP_VRRP_
 	int			init_state;		/* the initial state of the instance */
+#endif
 	int			wantstate;		/* user explicitly wants a state (back/mast) */
 	int			fd_in;			/* IN socket descriptor */
 	int			fd_out;			/* OUT socket descriptor */
@@ -246,6 +268,7 @@ typedef struct _vrrp_t {
 	/* Authentication data (only valid for VRRPv2) */
 	uint8_t			auth_type;		/* authentification type. VRRP_AUTH_* */
 	uint8_t			auth_data[8];		/* authentification data */
+	seq_counter_t		*ipsecah_counter;
 #endif
 
 	/*
@@ -256,9 +279,6 @@ typedef struct _vrrp_t {
 	 * to warn the user only if the outoing mtu is too small
 	 */
 	int			ip_id;
-
-	/* IPSEC AH counter def (only valid for VRRPv2) --rfc2402.3.3.2 */
-	seq_counter_t		*ipsecah_counter;
 } vrrp_t;
 
 /* VRRP state machine -- rfc2338.6.4 */
@@ -267,6 +287,7 @@ typedef struct _vrrp_t {
 #define VRRP_STATE_MAST			2	/* rfc2338.6.4.3 */
 #define VRRP_STATE_FAULT		3	/* internal */
 #define VRRP_STATE_GOTO_MASTER		4	/* internal */
+#define VRRP_STATE_STOP			97	/* internal */
 #define VRRP_STATE_GOTO_FAULT		98	/* internal */
 #define VRRP_DISPATCHER			99	/* internal */
 #define VRRP_MCAST_RETRY		10	/* internal */
@@ -311,6 +332,10 @@ typedef struct _vrrp_t {
 
 #define VRRP_ISUP(V)		(VRRP_IF_ISUP(V) && VRRP_SCRIPT_ISUP(V))
 
+/* Global variables */
+extern bool block_ipv4;
+extern bool block_ipv6;
+
 /* prototypes */
 extern vrrphdr_t *vrrp_get_header(sa_family_t, char *, unsigned *);
 extern int open_vrrp_send_socket(sa_family_t, int, ifindex_t, bool);
@@ -325,9 +350,7 @@ extern void vrrp_state_backup(vrrp_t *, char *, ssize_t);
 extern void vrrp_state_goto_master(vrrp_t *);
 extern void vrrp_state_leave_master(vrrp_t *);
 extern bool vrrp_complete_init(void);
-#ifdef _WITH_LVS_
-extern bool vrrp_ipvs_needed(void);
-#endif
+extern void vrrp_restore_interfaces_startup(void);
 extern void restore_vrrp_interfaces(void);
 extern void shutdown_vrrp_instances(void);
 extern void clear_diff_vrrp(void);

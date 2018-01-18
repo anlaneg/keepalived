@@ -17,7 +17,7 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2012 Alexandre Cassen, <acassen@linux-vs.org>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _PARSER_H
@@ -62,16 +62,17 @@ extern char *config_id;
 
 /* Prototypes */
 extern void install_keyword_root(const char *, void (*handler) (vector_t *), bool);
+extern void install_root_end_handler(void (*handler) (void));
 extern void install_sublevel(void);
 extern void install_sublevel_end(void);
 extern void install_sublevel_end_handler(void (*handler) (void));
 extern void install_keyword(const char *, void (*handler) (vector_t *));
 extern vector_t *alloc_strvec(char *);
 extern bool check_conf_file(const char*);
-extern bool read_line(char *, size_t);
 extern vector_t *read_value_block(vector_t *);
 extern void alloc_value_block(void (*alloc_func) (vector_t *));
 extern void *set_value(vector_t *);
+extern unsigned long read_timer(vector_t *);
 extern int check_true_false(char *);
 extern void skip_block(void);
 extern void init_data(const char *, vector_t * (*init_keywords) (void));
