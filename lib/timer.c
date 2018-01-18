@@ -36,6 +36,7 @@ timer_dup(timeval_t b)
 {
 	timeval_t a;
 
+	//创建一个b变量的副本
 	timer_reset_lazy(a);
 	a.tv_sec = b.tv_sec;
 	a.tv_usec = b.tv_usec;
@@ -43,18 +44,22 @@ timer_dup(timeval_t b)
 }
 
 /* timer compare */
+//=0 为相等，>0 时a比b大，<0时a比b小
 int
 timer_cmp(timeval_t a, timeval_t b)
 {
+	//先比较秒
 	time_t ret = a.tv_sec - b.tv_sec;
 	if (ret)
 		return ret < 0 ? -1 : 1;
 
+	//比较微秒
 	ret = a.tv_usec - b.tv_usec;
 	return ret < 0 ? -1 : ret > 0 ? 1 : 0;
 }
 
 /* timer sub */
+//事件的差值
 timeval_t
 timer_sub(timeval_t a, timeval_t b)
 {
@@ -73,6 +78,7 @@ timer_sub(timeval_t a, timeval_t b)
 }
 
 /* timer add */
+//在时间a上加一个偏移量
 timeval_t
 timer_add(timeval_t a, timeval_t b)
 {
@@ -90,6 +96,7 @@ timer_add(timeval_t a, timeval_t b)
 	return ret;
 }
 
+//在时间a上添加一个b微秒的偏移量
 timeval_t
 timer_add_long(timeval_t a, unsigned long b)
 {
@@ -139,9 +146,11 @@ monotonic_gettimeofday(timeval_t *now)
 
 	timer_reset_lazy(*now);
 
+	//返回当前时间
 	gettimeofday(&sys_date, NULL);
 
 	/* on first call, we set mono_date to system date */
+	//首次更新，设置mono_data
 	if (mono_date.tv_sec == 0) {
 		mono_date = sys_date;
 		timer_reset(drift);
@@ -161,6 +170,7 @@ monotonic_gettimeofday(timeval_t *now)
 	 */
 	deadline = timer_add_long(mono_date, TIME_MAX_FORWARD_US);
 	if (timer_cmp (adjusted, deadline) >= 0) {
+		//调整后的时间比deadline大，以deadline为准
 		mono_date = deadline;
 		goto fixup;
 	}
@@ -213,6 +223,7 @@ set_time_now(void)
 }
 
 /* timer sub from current time */
+//时间a减去当前时间
 timeval_t
 timer_sub_now(timeval_t a)
 {
@@ -220,6 +231,7 @@ timer_sub_now(timeval_t a)
 }
 
 /* timer add to current time */
+//时间a加上当前时间
 timeval_t
 timer_add_now(timeval_t a)
 {
@@ -231,6 +243,7 @@ timer_add_now(timeval_t a)
 }
 
 /* Return time as unsigned long */
+//将当前事件换算为微秒
 unsigned long
 timer_tol(timeval_t a)
 {
@@ -241,6 +254,7 @@ timer_tol(timeval_t a)
 
 #ifdef _INCLUDE_UNUSED_CODE_
 /* print timer value */
+//显示时间a对应的微秒数
 void
 timer_dump(timeval_t a)
 {

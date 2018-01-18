@@ -292,6 +292,7 @@ thread_list_add_timeval(thread_list_t * list, thread_t * thread)
 }
 
 /* Delete a thread from the list. */
+//自list中摘除thread
 static thread_t *
 thread_list_delete(thread_list_t * list, thread_t * thread)
 {
@@ -394,6 +395,7 @@ thread_destroy_master(thread_master_t * m)
 }
 
 /* Delete top of the list and return it. */
+//摘除list中首个元素
 static thread_t *
 thread_trim_head(thread_list_t * list)
 {
@@ -544,6 +546,7 @@ thread_add_child(thread_master_t * m, int (*func) (thread_t *)
 }
 
 /* Add simple event thread. */
+//创建事件线程
 thread_t *
 thread_add_event(thread_master_t * m, int (*func) (thread_t *)
 		 , void *arg, int val)
@@ -553,12 +556,13 @@ thread_add_event(thread_master_t * m, int (*func) (thread_t *)
 	assert(m != NULL);
 
 	thread = thread_new(m);
-	thread->type = THREAD_EVENT;
+	thread->type = THREAD_EVENT;//标记为事件线程
 	thread->id = 0;
 	thread->master = m;
 	thread->func = func;
 	thread->arg = arg;
 	thread->u.val = val;
+	//将线程加入到event变量上
 	thread_list_add(&m->event, thread);
 
 	return thread;
@@ -726,6 +730,7 @@ thread_fetch(thread_master_t * m, thread_t * fetch)
 retry:	/* When thread can't fetch try to find next thread again. */
 
 	/* If there is event process it first. */
+    //先处理event事件
 	while ((thread = thread_trim_head(&m->event))) {
 		*fetch = *thread;
 
@@ -735,12 +740,14 @@ retry:	/* When thread can't fetch try to find next thread again. */
 			thread_add_unuse(m, thread);
 			return NULL;
 		}
+		//将线程类型置为unused,将thread加入到unuse链表里
 		thread->type = THREAD_UNUSED;
 		thread_add_unuse(m, thread);
 		return fetch;
 	}
 
 	/* If there is ready threads process them */
+	//处理ready线程
 	while ((thread = thread_trim_head(&m->ready))) {
 		*fetch = *thread;
 		thread->type = THREAD_UNUSED;
@@ -981,6 +988,7 @@ thread_get_id(void)
 void
 thread_call(thread_t * thread)
 {
+	//设置线程id,执行回调
 	thread->id = thread_get_id();
 	(*thread->func) (thread);
 }
@@ -991,12 +999,14 @@ launch_scheduler(void)
 {
 	thread_t thread;
 
+	//注册信号处理
 	signal_set(SIGCHLD, thread_child_handler, master);
 
 	/*
 	 * Processing the master thread queues,
 	 * return and execute one ready thread.
 	 */
+	//提取一个thread
 	while (thread_fetch(master, &thread)) {
 		/* Run until error, used for debuging only */
 #if defined _DEBUG_ && defined _MEM_CHECK_
@@ -1012,6 +1022,7 @@ launch_scheduler(void)
 			thread_add_terminate_event(master);
 		}
 #endif
+		//调用线程对应的回调
 		thread_call(&thread);
 	}
 }

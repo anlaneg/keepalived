@@ -68,7 +68,7 @@ typedef struct _thread_master {
 	thread_list_t write;
 	thread_list_t timer;
 	thread_list_t child;
-	thread_list_t event;
+	thread_list_t event;//用于串连定义的线程
 	thread_list_t ready;
 	thread_list_t unuse;
 	list child_pid_index;

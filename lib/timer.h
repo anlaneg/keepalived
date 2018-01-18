@@ -43,10 +43,12 @@ extern timeval_t time_now;
 #define timer_sec(T) ((T).tv_sec)
 #define timer_long(T) (unsigned long)(((T).tv_sec * TIMER_HZ + (T).tv_usec))
 #define timer_isnull(T) ((T).tv_sec == 0 && (T).tv_usec == 0)
+//将时间清0，这个宏的sizeof，可以更新为sizeof(T)
 #define timer_reset(T) (memset(&(T), 0, sizeof(timeval_t)))
 /* call this instead of timer_reset() when you intend to set
  * all the fields of timeval manually afterwards. */
 #define timer_reset_lazy(T) do { \
+	/*如果T结构体存在空隙，则采用memset方式初始化结构体*/\
 	if ( sizeof((T)) != sizeof((T).tv_sec) + sizeof((T).tv_usec) ) \
 		timer_reset((T)); \
 	} while (0)
