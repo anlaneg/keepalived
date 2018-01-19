@@ -304,6 +304,7 @@ start_keepalived(void)
 #ifdef _WITH_VRRP_
 	/* start vrrp child */
 	if (__test_bit(DAEMON_VRRP, &daemon_mode))
+		//启动vrrp子进程
 		start_vrrp_child();
 #endif
 }
@@ -885,6 +886,7 @@ keepalived_main(int argc, char **argv)
 #endif
 
 	/* Open log with default settings so we can log initially */
+	//初始化log
 	openlog(PACKAGE_NAME, LOG_PID, log_facility);
 
 #ifdef _MEM_CHECK_
@@ -924,6 +926,7 @@ keepalived_main(int argc, char **argv)
 	 * Parse command line and set debug level.
 	 * bits 0..7 reserved by main.c
 	 */
+	//解析命令行
 	if (parse_cmdline(argc, argv)) {
 		closelog();
 		if (!__test_bit(NO_SYSLOG_BIT, &debug))
@@ -1057,6 +1060,7 @@ keepalived_main(int argc, char **argv)
 	}
 
 	/* Check if keepalived is already running */
+	//如果已有进程运行了，就退出
 	if (keepalived_running(daemon_mode)) {
 		log_message(LOG_INFO, "daemon is already running");
 		report_stopped = false;
@@ -1064,6 +1068,7 @@ keepalived_main(int argc, char **argv)
 	}
 
 	/* daemonize process */
+	//完成daemon处理
 	if (!__test_bit(DONT_FORK_BIT, &debug) &&
 	    xdaemon(false, false, true) > 0) {
 		closelog();
@@ -1081,6 +1086,7 @@ keepalived_main(int argc, char **argv)
 #endif
 
 	/* write the father's pidfile */
+	//写pid文件
 	if (!pidfile_write(main_pidfile, getpid()))
 		goto end;
 

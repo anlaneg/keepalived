@@ -412,6 +412,7 @@ dump_ipaddress(void *if_data)
 			    , ipaddr->label ? " label " : ""
 			    , ipaddr->label ? ipaddr->label : "");
 }
+//解析地址（填充地址格式，填充地址，填充地址前缀长度）
 ip_address_t *
 parse_ipaddress(ip_address_t *ip_address, char *str, int allow_default)
 {
@@ -427,9 +428,11 @@ parse_ipaddress(ip_address_t *ip_address, char *str, int allow_default)
 	/* Handle the specials */
 	if (allow_default) {
 		if (!strcmp(str, "default")) {
+			//为default时，返回ipv4
 			new->ifa.ifa_family = AF_INET;
 			return new;
 		} else if (!strcmp(str, "default6")) {
+			//返回地址格式ipv6
 			new->ifa.ifa_family = AF_INET6;
 			return new;
 		}
@@ -440,12 +443,14 @@ parse_ipaddress(ip_address_t *ip_address, char *str, int allow_default)
 	new->ifa.ifa_prefixlen = (IP_IS6(new)) ? 128 : 32;
 	p = strchr(str, '/');
 	if (p) {
+		//如果含有前缀，则设置前缀长度
 		new->ifa.ifa_prefixlen = (uint8_t)atoi(p + 1);
 		*p = 0;
 	}
 
 	addr = (IP_IS6(new)) ? (void *) &new->u.sin6_addr :
 			       (void *) &new->u.sin.sin_addr;
+	//实现地址转换
 	if (!inet_pton(IP_FAMILY(new), str, addr)) {
 		log_message(LOG_INFO, "VRRP parsed invalid IP %s. skipping IP...", str);
 		if (!ip_address)
@@ -487,6 +492,7 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 	new = (ip_address_t *) MALLOC(sizeof(ip_address_t));
 
 	/* We expect the address first */
+	//取0下标为ip地址
 	if (!parse_ipaddress(new, strvec_slot(strvec,0), false)) {
 		FREE(new);
 		return;
@@ -501,6 +507,7 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 		/* cmd parsing */
 		param_avail = (vector_size(strvec) >= i+2);
 
+		//dev 参数处理
 		if (!strcmp(str, "dev")) {
 			if (!param_avail) {
 				param_missing = true;
@@ -508,12 +515,15 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 			}
 
 			if (new->ifp) {
+				//已有ifp设备，则dev出现多次
 				log_message(LOG_INFO, "Cannot specify static ipaddress device more than once for %s", FMT_STR_VSLOT(strvec, addr_idx));
 				FREE(new);
 				return;
 			}
+			//取出“dev”串后面的接口名称
 			ifp_local = if_get_by_ifname(strvec_slot(strvec, ++i));
 			if (!ifp_local) {
+				//指定的接口不存在
 				log_message(LOG_INFO, "VRRP is trying to assign ip address %s to unknown %s"
 				       " interface !!! go out and fix your conf !!!",
 				       FMT_STR_VSLOT(strvec, addr_idx),
@@ -521,9 +531,11 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 				FREE(new);
 				return;
 			}
+			//设置对应的接口及接口索引
 			new->ifa.ifa_index = IF_INDEX(ifp_local);
 			new->ifp = ifp_local;
 		} else if (!strcmp(str, "scope")) {
+			//scop参数处理
 			if (!param_avail) {
 				param_missing = true;
 				break;
@@ -534,6 +546,7 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 			else
 				new->ifa.ifa_scope = scope;
 		} else if (!strcmp(str, "broadcast") || !strcmp(str, "brd")) {
+			//广播地址参数处理
 			if (!param_avail) {
 				param_missing = true;
 				break;
@@ -549,23 +562,29 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 
 			param = strvec_slot(strvec, ++i);
 			if (!strcmp(param, "-") || !strcmp(param, "+")) {
+				//遇到'-'或者'+'号时，‘－’号时认为‘0'为广播地址，‘+'号时认为'1'为广播地址
+				//例如 10.0.0.0/8 时 10.255.255.255 是＋号认为的广播地址，10.0.0.0是'-'号认为的广播地址
 				if (new->ifa.ifa_prefixlen <= 30) {
 					new->u.sin.sin_brd = new->u.sin.sin_addr;
 					for (j = 31; j >= new->ifa.ifa_prefixlen; j--) {
 						if (param[0] == '+')
+							//设置为‘1’
 							new->u.sin.sin_brd.s_addr |= htonl(1U<<(31-j));
 						else
+							//设置为‘0’
 							new->u.sin.sin_brd.s_addr &= ~htonl(1U<<(31-j));
 					}
 				}
 			}
 			else if (!inet_pton(AF_INET, param, &new->u.sin.sin_brd)) {
+				//转换用户指定的广播地址失败
 				log_message(LOG_INFO, "VRRP is trying to assign invalid broadcast %s. "
 						      "skipping VIP...", FMT_STR_VSLOT(strvec, i));
 				FREE(new);
 				return;
 			}
 		} else if (!strcmp(str, "label")) {
+			//设置label，别名
 			if (!param_avail) {
 				param_missing = true;
 				break;
@@ -604,6 +623,7 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 
 	/* Check if there was a missing parameter for a keyword */
 	if (param_missing) {
+		//缺少参数，报错
 		log_message(LOG_INFO, "No %s parameter specified for %s", str, FMT_STR_VSLOT(strvec, addr_idx));
 		free(new);
 		return;
@@ -636,6 +656,7 @@ alloc_ipaddress(list ip_list, vector_t *strvec, interface_t *ifp)
 		}
 	}
 
+	//将此地址串入
 	list_add(ip_list, new);
 }
 

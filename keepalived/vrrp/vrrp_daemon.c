@@ -210,6 +210,7 @@ start_vrrp(void)
 	/* Parse configuration file */
 	vrrp_data = alloc_vrrp_data();
 	if (!vrrp_data) {
+		//申请vrrp_data失败
 		stop_vrrp(KEEPALIVED_EXIT_FATAL);
 		return;
 	}
@@ -531,6 +532,7 @@ start_vrrp_child(void)
 	if (log_file_name)
 		flush_log_file();
 
+	//fork一个子进程
 	pid = fork();
 
 	if (pid < 0) {
@@ -538,6 +540,7 @@ start_vrrp_child(void)
 			       , strerror(errno));
 		return -1;
 	} else if (pid) {
+		//使父进程注册vrrp子线程
 		vrrp_child = pid;
 		log_message(LOG_INFO, "Starting VRRP child process, pid=%d"
 			       , pid);
@@ -547,6 +550,7 @@ start_vrrp_child(void)
 				 pid, RESPAWN_TIMER);
 		return 0;
 	}
+	//子进程自此开始运行
 	prctl(PR_SET_PDEATHSIG, SIGTERM);
 
 	signal_handler_destroy();
@@ -582,6 +586,7 @@ start_vrrp_child(void)
 	set_child_finder(NULL, NULL, NULL, NULL, NULL, 0);	/* Currently these won't be set */
 
 	/* Child process part, write pidfile */
+	//子进程写pid file
 	if (!pidfile_write(vrrp_pidfile, getpid())) {
 		/* Fatal error */
 		log_message(LOG_INFO, "VRRP child process: cannot write pidfile");
@@ -589,6 +594,7 @@ start_vrrp_child(void)
 	}
 
 	/* Create the new master thread */
+	//重新创建新的master,先将父节点创建的释放掉
 	thread_destroy_master(master);	/* This destroys any residual settings from the parent */
 	master = thread_make_master();
 #endif

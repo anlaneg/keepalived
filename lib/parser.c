@@ -85,6 +85,7 @@ null_strvec(const vector_t *strvec, size_t index)
 	return NULL;
 }
 
+//存入keyword
 static void
 keyword_alloc(vector_t *keywords_vec, const char *string, void (*handler) (vector_t *), bool active)
 {

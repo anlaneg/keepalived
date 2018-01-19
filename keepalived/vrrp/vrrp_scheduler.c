@@ -58,7 +58,7 @@
 #include <stdint.h>
 
 /* global vars */
-timeval_t garp_next_time;
+timeval_t garp_next_time;//下一次发送garp的时间
 thread_t *garp_thread;
 
 /* VRRP FSM (Finite State Machine) design.

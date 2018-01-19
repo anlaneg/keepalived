@@ -153,16 +153,18 @@ tcp_connection_state(int fd, enum connect_result status, thread_t * thread,
 	switch (status) {
 	case connect_error:
 		close(fd);
-		thread_add_terminate_event(thread->master);
+		thread_add_terminate_event(thread->master);//中止此线程
 		break;
 
 	case connect_success:
+		//连接成功，创建写线程
 		thread_add_write(thread->master, func, THREAD_ARG(thread),
 				 fd, timeout);
 		break;
 
 		/* Checking non-blocking connect, we wait until socket is writable */
 	case connect_in_progress:
+		//连接中，创建写线程
 		thread_add_write(thread->master, func, THREAD_ARG(thread),
 				 fd, timeout);
 		break;

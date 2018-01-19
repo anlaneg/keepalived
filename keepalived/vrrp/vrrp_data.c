@@ -512,6 +512,7 @@ alloc_vrrp_vip(vector_t *strvec)
 	sa_family_t address_family;
 
 	if (!LIST_EXISTS(vrrp->vip))
+		//不存在vip链表，申请vip链表
 		vrrp->vip = alloc_list(free_ipaddress, dump_ipaddress);
 	else if (!LIST_ISEMPTY(vrrp->vip))
 		list_end = LIST_TAIL_DATA(vrrp->vip);

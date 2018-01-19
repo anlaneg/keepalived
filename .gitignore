@@ -38,6 +38,10 @@ stamp-h?
 # Makefile.in
 # /configure
 
+.cproject
+.project
+.settings/
+
 # For snap builds
 parts/
 prime/

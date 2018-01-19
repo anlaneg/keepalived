@@ -61,6 +61,7 @@ free_sock(SOCK * sock_obj)
 }
 
 /* Init socket handler */
+//创建socket处理
 void
 init_sock(void)
 {

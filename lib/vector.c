@@ -28,6 +28,7 @@
 /* Function to call if attempt to read beyond end of strvec */
 static null_strvec_handler_t null_strvec_handler;
 
+//注册空处理钩子
 null_strvec_handler_t register_null_strvec_handler(null_strvec_handler_t null_strvec_func)
 {
 	null_strvec_handler_t old_handler = null_strvec_handler;
@@ -46,6 +47,7 @@ null_strvec_handler_t unregister_null_strvec_handler(void)
 	return old_handler;
 }
 
+//取出strvec[index]的元素
 void *strvec_slot(const vector_t *strvec, size_t index)
 {
 	if (strvec &&
@@ -53,6 +55,7 @@ void *strvec_slot(const vector_t *strvec, size_t index)
 	    strvec->slot[index])
 		return strvec->slot[index];
 
+	//如果有相应的钩子，则调用钩子
 	if (null_strvec_handler)
 		(*null_strvec_handler)(strvec, index);
 

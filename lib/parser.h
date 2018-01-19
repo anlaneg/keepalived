@@ -45,7 +45,7 @@
 typedef struct _keyword {
 	const char *string;
 	void (*handler) (vector_t *);
-	vector_t *sub;
+	vector_t *sub;//存放keyword
 	void (*sub_close_handler) (void);
 	bool active;
 } keyword_t;

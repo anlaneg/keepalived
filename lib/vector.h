@@ -28,9 +28,9 @@
 
 /* vector definition */
 typedef struct _vector {
-	unsigned int	active;
-	unsigned int	allocated;
-	void		**slot;
+	unsigned int	active;//被使用的空间数
+	unsigned int	allocated;//申请的大小
+	void		**slot;//指向申请的内存
 } vector_t;
 
 typedef char *(*null_strvec_handler_t)(const vector_t *, size_t);

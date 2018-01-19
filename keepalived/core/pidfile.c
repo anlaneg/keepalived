@@ -75,6 +75,7 @@ pidfile_rm(const char *pid_file)
 }
 
 /* return the daemon running state */
+//通过读取pid文件，检查进程是否还在运行
 static int
 process_running(const char *pid_file)
 {
@@ -109,6 +110,7 @@ process_running(const char *pid_file)
 }
 
 /* Return parent process daemon state */
+//检查是否有已有进程在运行了
 bool
 keepalived_running(unsigned long mode)
 {

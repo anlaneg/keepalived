@@ -54,7 +54,7 @@
 #include "logger.h"
 
 /* Local vars */
-static list if_queue;
+static list if_queue;//用来记录interface
 static struct ifreq ifr;
 
 static list old_if_queue;
@@ -106,6 +106,7 @@ base_if_get_by_ifp(interface_t *ifp)
 #endif
 }
 
+//给出接口名称，找对应的interface_t结构，如果找不到，返回NULL
 interface_t *
 if_get_by_ifname(const char *ifname)
 {

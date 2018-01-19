@@ -237,6 +237,7 @@ report_child_status(int status, pid_t pid, char const *prog_name)
 #endif
 
 /* Make thread master. */
+//创建线程master
 thread_master_t *
 thread_make_master(void)
 {
@@ -280,6 +281,7 @@ thread_list_add_timeval(thread_list_t * list, thread_t * thread)
 {
 	thread_t *tt;
 
+	//按时间排序
 	for (tt = list->head; tt; tt = tt->next) {
 		if (timer_cmp(thread->sands, tt->sands) <= 0)
 			break;
@@ -310,6 +312,7 @@ thread_list_delete(thread_list_t * list, thread_t * thread)
 }
 
 /* Free all unused thread. */
+//释放掉所有unused的线程元素
 static void
 thread_clean_unuse(thread_master_t * m)
 {
@@ -331,6 +334,7 @@ thread_clean_unuse(thread_master_t * m)
 }
 
 /* Move thread to unuse list. */
+//将此线程加入到unuse中
 static void
 thread_add_unuse(thread_master_t * m, thread_t * thread)
 {
@@ -411,12 +415,14 @@ thread_new(thread_master_t * m)
 	thread_t *new;
 
 	/* If one thread is already allocated return it */
+	//如果unused中有线程元素，则使用unused的线程元素
 	if (m->unuse.head) {
 		new = thread_trim_head(&m->unuse);
 		memset(new, 0, sizeof (thread_t));
 		return new;
 	}
 
+	//否则向内存申请
 	new = (thread_t *) MALLOC(sizeof (thread_t));
 	m->alloc++;
 	return new;
@@ -431,6 +437,7 @@ thread_add_read(thread_master_t * m, int (*func) (thread_t *)
 
 	assert(m != NULL);
 
+	//将需要读的fd添加到readfd中
 	if (FD_ISSET(fd, &m->readfd)) {
 		log_message(LOG_WARNING, "There is already read fd [%d]", fd);
 		return NULL;
@@ -456,6 +463,7 @@ thread_add_read(thread_master_t * m, int (*func) (thread_t *)
 }
 
 /* Add new write thread. */
+//创建写线程
 thread_t *
 thread_add_write(thread_master_t * m, int (*func) (thread_t *)
 		 , void *arg, int fd, unsigned long timer)
@@ -489,6 +497,7 @@ thread_add_write(thread_master_t * m, int (*func) (thread_t *)
 }
 
 /* Add timer event thread. */
+//向线程列表中加入timer
 thread_t *
 thread_add_timer(thread_master_t * m, int (*func) (thread_t *)
 		 , void *arg, unsigned long timer)
@@ -498,7 +507,7 @@ thread_add_timer(thread_master_t * m, int (*func) (thread_t *)
 	assert(m != NULL);
 
 	thread = thread_new(m);
-	thread->type = THREAD_TIMER;
+	thread->type = THREAD_TIMER;//timer类型
 	thread->id = 0;
 	thread->master = m;
 	thread->func = func;
@@ -515,6 +524,7 @@ thread_add_timer(thread_master_t * m, int (*func) (thread_t *)
 }
 
 /* Add a child thread. */
+//创建并注册子线程
 thread_t *
 thread_add_child(thread_master_t * m, int (*func) (thread_t *)
 		 , void * arg, pid_t pid, unsigned long timer)
@@ -569,6 +579,7 @@ thread_add_event(thread_master_t * m, int (*func) (thread_t *)
 }
 
 /* Add simple event thread. */
+//添加需要被中止的线程
 thread_t *
 thread_add_terminate_event(thread_master_t * m)
 {
@@ -680,6 +691,7 @@ thread_compute_timer(thread_master_t * m, timeval_t * timer_wait)
 	timeval_t timer_min;
 
 	/* Prepare timer */
+	//自timer,write,read,child中找出一个最小的timer
 	timer_reset(timer_min);
 	thread_update_timer(&m->timer, &timer_min);
 	thread_update_timer(&m->write, &timer_min);
@@ -690,8 +702,10 @@ thread_compute_timer(thread_master_t * m, timeval_t * timer_wait)
 	if (!timer_isnull(timer_min)) {
 		timer_min = timer_sub(timer_min, time_now);
 		if (timer_min.tv_sec < 0) {
+			//如果已过期，则定为0
 			timer_min.tv_sec = timer_min.tv_usec = 0;
 		} else if (timer_min.tv_sec >= 1) {
+			//大于1s的定为1S
 			timer_min.tv_sec = 1;
 			timer_min.tv_usec = 0;
 		}
@@ -699,6 +713,8 @@ thread_compute_timer(thread_master_t * m, timeval_t * timer_wait)
 		timer_wait->tv_sec = timer_min.tv_sec;
 		timer_wait->tv_usec = timer_min.tv_usec;
 	} else {
+		//如果timer_min为空，说明timer,write,read,child均无元素
+		//定义为1S
 		timer_wait->tv_sec = 1;
 		timer_wait->tv_usec = 0;
 	}
@@ -735,6 +751,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 		*fetch = *thread;
 
 		/* If daemon hanging event is received return NULL pointer */
+		//如果是中止线程，则将其将thread设置为unused并返回NULL
 		if (thread->type == THREAD_TERMINATE) {
 			thread->type = THREAD_UNUSED;
 			thread_add_unuse(m, thread);
@@ -767,6 +784,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	writefd = m->writefd;
 	exceptfd = m->exceptfd;
 
+	//将信号读取的fd加入到read集里
 	signal_fd = signal_rfd();
 	FD_SET(signal_fd, &readfd);
 
@@ -784,6 +802,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 		memcpy(&timer_wait, &snmp_timer_wait, sizeof(timeval_t));
 #endif
 
+	//调用select，获取fd,并设置超时间间
 	ret = select(FD_SETSIZE, &readfd, &writefd, &exceptfd, &timer_wait);
 
 	/* we have to save errno here because the next syscalls will set it */
@@ -798,6 +817,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 #endif
 
 	/* handle signals synchronously, including child reaping */
+	//如果信号有触发，则处理信号处理回调
 	if (ret > 0 && FD_ISSET(signal_fd, &readfd))
 		signal_run_callback();
 
@@ -811,6 +831,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	}
 
 	/* Timeout children */
+	//整理出超时的子线程，将其加入到ready中，置其类型为child_timeout
 	thread = m->child.head;
 	while (thread) {
 		thread_t *t;
@@ -829,6 +850,8 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	}
 
 	/* Read thead. */
+	//将可读的thread自read链中移除，将其接在ready链上（类型置为READY_FD)
+	//将超时的read，也加入到ready中，置类型为READ_TIMEOUT
 	thread = m->read.head;
 	timers_done = false;
 	while (thread) {
@@ -856,6 +879,8 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	}
 
 	/* Write thead. */
+	//将可写的fd自write中移除，置ready链，状态为READY_FD,如果write超时也置
+	//ready链，状态为WRITE_TIMEOUT
 	thread = m->write.head;
 	timers_done = false;
 	while (thread) {
@@ -885,6 +910,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	/*... */
 
 	/* Timer update. */
+	//将timer中超时的项置在ready链中，并置状态READY
 	thread = m->timer.head;
 	while (thread) {
 		thread_t *t;
@@ -901,6 +927,7 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	}
 
 	/* Return one event. */
+	//自ready中返回首个thread
 	thread = thread_trim_head(&m->ready);
 
 #ifdef _WITH_SNMP_
@@ -909,10 +936,12 @@ retry:	/* When thread can't fetch try to find next thread again. */
 #endif
 
 	/* There is no ready thread. */
+	//如果没有获得thread,则死循环（select超时等待）
 	if (!thread)
 		goto retry;
 
-	*fetch = *thread;
+	//回收此thread
+	*fetch = *thread;//copy到临时变量
 	thread->type = THREAD_UNUSED;
 	thread_add_unuse(m, thread);
 
@@ -994,6 +1023,7 @@ thread_call(thread_t * thread)
 }
 
 /* Our infinite scheduling loop */
+//单线程事件模形，用于找到可调度的thread并回调它
 void
 launch_scheduler(void)
 {

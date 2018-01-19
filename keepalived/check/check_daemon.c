@@ -327,6 +327,7 @@ start_check_child(void)
 			       , strerror(errno));
 		return -1;
 	} else if (pid) {
+		//父进程退出
 		checkers_child = pid;
 		log_message(LOG_INFO, "Starting Healthcheck child process, pid=%d"
 			       , pid);

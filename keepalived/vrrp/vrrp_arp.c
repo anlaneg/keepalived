@@ -70,28 +70,32 @@ static ssize_t send_arp(ip_address_t *ipaddress)
 /* Build a gratuitous ARP message over a specific interface */
 ssize_t send_gratuitous_arp_immediate(interface_t *ifp, ip_address_t *ipaddress)
 {
+	//构造并立即发送免费arp
 	struct ether_header *eth = (struct ether_header *) garp_buffer;
 	arphdr_t *arph		 = (arphdr_t *) (garp_buffer + ETHER_HDR_LEN);
 	char *hwaddr		 = (char *) IF_HWADDR(ipaddress->ifp);
 	ssize_t len;
 
 	/* Ethernet header */
-	memset(eth->ether_dhost, 0xFF, ETH_ALEN);
-	memcpy(eth->ether_shost, hwaddr, ETH_ALEN);
-	eth->ether_type = htons(ETHERTYPE_ARP);
+	//填充以太头
+	memset(eth->ether_dhost, 0xFF, ETH_ALEN);//广播报文
+	memcpy(eth->ether_shost, hwaddr, ETH_ALEN);//ipaddress所属接口的mac地址
+	eth->ether_type = htons(ETHERTYPE_ARP);//指明上层为arp协议
 
 	/* ARP payload */
 	arph->ar_hrd = htons(ARPHRD_ETHER);
 	arph->ar_pro = htons(ETHERTYPE_IP);
 	arph->ar_hln = ETHERNET_HW_LEN;
 	arph->ar_pln = IPPROTO_ADDR_LEN;
-	arph->ar_op = htons(ARPOP_REQUEST);
+	arph->ar_op = htons(ARPOP_REQUEST);//指明arp请求
+	//填充自身ip,请求ip,自身mac
 	memcpy(arph->__ar_sha, hwaddr, ETH_ALEN);
 	memcpy(arph->__ar_sip, &ipaddress->u.sin.sin_addr.s_addr, sizeof(struct in_addr));
-	memset(arph->__ar_tha, 0xFF, ETH_ALEN);
+	memset(arph->__ar_tha, 0xFF, ETH_ALEN);//这里不应填写全0吗？（免费arp)
 	memcpy(arph->__ar_tip, &ipaddress->u.sin.sin_addr.s_addr, sizeof(struct in_addr));
 
 	/* Send the ARP message */
+	//向外发送
 	len = send_arp(ipaddress);
 
 	/* If we have to delay between sending garps, note the next time we can */
@@ -103,6 +107,7 @@ ssize_t send_gratuitous_arp_immediate(interface_t *ifp, ip_address_t *ipaddress)
 	return len;
 }
 
+//将免费arp加入timer列表
 static void queue_garp(vrrp_t *vrrp, interface_t *ifp, ip_address_t *ipaddress)
 {
 	timeval_t next_time = timer_add_now(ifp->garp_delay->garp_interval);
@@ -111,16 +116,18 @@ static void queue_garp(vrrp_t *vrrp, interface_t *ifp, ip_address_t *ipaddress)
 	ipaddress->garp_gna_pending = true;
 
 	/* Do we need to reschedule the garp thread? */
+	//如果还没有创建发送免费arp的线程或者发送免费arp的时间不到
 	if (!garp_thread || timer_cmp(next_time, garp_next_time) < 0) {
 		if (garp_thread)
 			thread_cancel(garp_thread);
 
-		garp_next_time = next_time;
+		garp_next_time = next_time;//更新下次发送免费arp的时间
 
 		garp_thread = thread_add_timer(master, vrrp_arp_thread, NULL, timer_long(timer_sub_now(garp_next_time)));
 	}
 }
 
+//发送免费arp,或加入timer列表，或立即发送arp
 void send_gratuitous_arp(vrrp_t *vrrp, ip_address_t *ipaddress)
 {
 	interface_t *ifp = IF_BASE_IFP(ipaddress->ifp);
@@ -132,23 +139,27 @@ void send_gratuitous_arp(vrrp_t *vrrp, ip_address_t *ipaddress)
 	    ifp->garp_delay->have_garp_interval &&
 	    ifp->garp_delay->garp_next_time.tv_sec) {
 		if (timer_cmp(time_now, ifp->garp_delay->garp_next_time) < 0) {
+			//发送时间不到，将arp入队
 			queue_garp(vrrp, ifp, ipaddress);
 			return;
 		}
 	}
 
+	//立即发送arp
 	send_gratuitous_arp_immediate(ifp, ipaddress);
 }
 
 /*
  *	Gratuitous ARP init/close
  */
+//初始化免费arp
 void gratuitous_arp_init(void)
 {
 	/* Initalize shared buffer */
 	garp_buffer = (char *)MALLOC(sizeof(arphdr_t) + ETHER_HDR_LEN);
 
 	/* Create the socket descriptor */
+	//创建raw socket用于发送arp报文
 	garp_fd = socket(PF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_RARP));
 
 	if (garp_fd > 0)

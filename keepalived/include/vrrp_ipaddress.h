@@ -48,7 +48,7 @@ typedef struct _ip_address {
 	union {
 		struct {
 			struct in_addr sin_addr;
-			struct in_addr sin_brd;
+			struct in_addr sin_brd;//广播地址
 		} sin;
 		struct in6_addr sin6_addr;
 	} u;
@@ -74,6 +74,7 @@ typedef struct _ip_address {
 
 /* Macro definition */
 #define IP_FAMILY(X)	(X)->ifa.ifa_family
+//检查是否为ipv6地址格式
 #define IP_IS6(X)	((X)->ifa.ifa_family == AF_INET6)
 #define IP_IS4(X)	((X)->ifa.ifa_family == AF_INET)
 #define IP_SIZE(X)      (IP_IS6(X) ? sizeof((X)->u.sin6_addr) : sizeof((X)->u.sin.sin_addr))

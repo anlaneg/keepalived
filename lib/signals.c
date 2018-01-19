@@ -118,9 +118,11 @@ signal_pending(void)
 #endif
 
 /* Signal flag */
+//信号处理（所有可处理的信号被通过管道传递，使之支持event机制
 static void
 signal_handler(int sig)
 {
+	//主要目的将信号处理归一为fd处理。
 	if (write(signal_pipe[1], &sig, sizeof(int)) != sizeof(int)) {
 		DBG("signal_pipe write error %s", strerror(errno));
 		assert(0);
@@ -148,6 +150,8 @@ signal_set(int signo, void (*func) (void *, int), void *v)
 		v = NULL;
 	}
 	else
+		//除SIG_IGN及SIG_DFL以外的信号处理函数，统一定义为signal_handler
+		//作者通过这种方式，将信号处理与fd处理统一了。
 		sig.sa_handler = signal_handler;
 	sigemptyset(&sig.sa_mask);
 	sig.sa_flags = 0;
@@ -379,11 +383,13 @@ signal_rfd(void)
 }
 
 /* Handlers callback  */
+//读取信号处理句柄，并触发相应的回调
 void
 signal_run_callback(void)
 {
 	int sig;
 
+	//自信号管道中读取发生的信号，并进行处理
 	while(read(signal_pipe[0], &sig, sizeof(int)) == sizeof(int)) {
 		switch(sig) {
 		case SIGHUP:

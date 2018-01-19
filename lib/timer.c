@@ -154,7 +154,7 @@ monotonic_gettimeofday(timeval_t *now)
 	if (mono_date.tv_sec == 0) {
 		mono_date = sys_date;
 		timer_reset(drift);
-		*now = mono_d土ate;
+		*now = mono_date;
 		return 0;
 	}
 

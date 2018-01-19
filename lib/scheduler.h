@@ -44,6 +44,7 @@ typedef struct _thread {
 	struct _thread_master *master;	/* pointer to the struct thread_master. */
 	int (*func) (struct _thread *);	/* event function */
 	void *arg;			/* event argument */
+	//所有thread_t在链表上排列时，以此字段进行排序
 	timeval_t sands;		/* rest of time sands value. */
 	union {
 		int val;		/* second argument of the event. */
@@ -64,16 +65,16 @@ typedef struct _thread_list {
 
 /* Master of the threads. */
 typedef struct _thread_master {
-	thread_list_t read;
-	thread_list_t write;
-	thread_list_t timer;
-	thread_list_t child;
+	thread_list_t read;//THREAD_READ类型的存在此链上
+	thread_list_t write;//THREAD_WRITE类型的存在此链上
+	thread_list_t timer;//用于串连timer
+	thread_list_t child;//用于串连子线程
 	thread_list_t event;//用于串连定义的线程
-	thread_list_t ready;
-	thread_list_t unuse;
+	thread_list_t ready;//用于挂接write,timer,child,read上可读写的fd或者超时的fd
+	thread_list_t unuse;//空闲的thread_t变量
 	list child_pid_index;
-	fd_set readfd;
-	fd_set writefd;
+	fd_set readfd;//需要读的fd
+	fd_set writefd;//需要写的fd
 	fd_set exceptfd;
 	unsigned long alloc;
 } thread_master_t;

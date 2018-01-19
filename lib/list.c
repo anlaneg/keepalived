@@ -39,6 +39,7 @@ alloc_element(void)
 	return new;
 }
 
+//申请element并将其加入到list
 void
 list_add(list l, void *data)
 {
@@ -56,6 +57,7 @@ list_add(list l, void *data)
 	l->count++;
 }
 
+//找到data,并将其自list中删除
 void
 list_del(list l, void *data)
 {
@@ -80,6 +82,7 @@ list_del(list l, void *data)
 	}
 }
 
+//返回list中第num个元素的data
 void *
 list_element(list l, size_t num)
 {
@@ -99,6 +102,7 @@ list_element(list l, size_t num)
 	return NULL;
 }
 
+//遍历list，并调用dump
 void
 dump_list(list l)
 {
@@ -109,6 +113,7 @@ dump_list(list l)
 			(*l->dump) (e->data);
 }
 
+//遍历list,并针对每一个list元素，调用list上的free函数
 static void
 free_elements(list l)
 {
@@ -128,6 +133,7 @@ free_elements(list l)
 #endif
 }
 
+//销毁list
 void
 free_list_elements(list l)
 {
@@ -137,6 +143,7 @@ free_list_elements(list l)
 	l->tail = NULL;
 }
 
+//销毁list，并置list为空
 void
 free_list(list *lp)
 {
@@ -152,6 +159,7 @@ free_list(list *lp)
 	FREE(l);
 }
 
+//删除l中的元素e,并释放其data占用的内存
 void
 free_list_element(list l, element e)
 {
@@ -172,6 +180,7 @@ free_list_element(list l, element e)
 }
 
 /* Multiple list helpers functions */
+//申请list,设置list对应的回调，容许同时创建多个list
 list
 alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), size_t size)
 {
@@ -196,6 +205,7 @@ dump_mlist(list l, size_t size)
 }
 #endif
 
+//针对每个list的element，调用free_func函数
 static void
 free_melement(list l, void (*free_func) (void *))
 {
@@ -210,6 +220,7 @@ free_melement(list l, void (*free_func) (void *))
 	}
 }
 
+//一次性释放掉多个list(有size个）
 void
 free_mlist(list l, size_t size)
 {
