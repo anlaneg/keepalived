@@ -43,11 +43,11 @@
 
 /* keyword definition */
 typedef struct _keyword {
-	const char *string;
-	void (*handler) (vector_t *);
-	vector_t *sub;//存放keyword
+	const char *string;//关键字的字面值
+	void (*handler) (vector_t *);//处理函数
+	vector_t *sub;//本关键字的下面keyword,这样将形成一棵树
 	void (*sub_close_handler) (void);
-	bool active;
+	bool active;//如果此项不会true，则sub中无值
 } keyword_t;
 
 /* Reloading helpers */

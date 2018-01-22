@@ -89,6 +89,7 @@ vrrp_sync_group_handler(vector_t *strvec)
 		return;
 	}
 
+	//取第一个参数
 	gname = strvec_slot(strvec, 1);
 
 	/* check group doesn't already exist */
@@ -933,6 +934,7 @@ init_vrrp_keywords(bool active)
 #endif
 
 	/* VRRP Instance mapping */
+	//安装vrrp_sync_group命令，并在其下安装group,notify_backup,notify_master...等命令
 	install_keyword_root("vrrp_sync_group", &vrrp_sync_group_handler, active);
 	install_keyword("group", &vrrp_group_handler);
 	install_keyword("notify_backup", &vrrp_gnotify_backup_handler);
@@ -942,12 +944,14 @@ init_vrrp_keywords(bool active)
 	install_keyword("smtp_alert", &vrrp_gsmtp_handler);
 	install_keyword("global_tracking", &vrrp_gglobal_tracking_handler);
 
+	//安装garp_group命令
 	install_keyword_root("garp_group", &garp_group_handler, active);
 	install_keyword("garp_interval", &garp_group_garp_interval_handler);
 	install_keyword("gna_interval", &garp_group_gna_interval_handler);
 	install_keyword("interface", &garp_group_interface_handler);
 	install_keyword("interfaces", &garp_group_interfaces_handler);
 
+	//安装vrrp_instance命令
 	install_keyword_root("vrrp_instance", &vrrp_handler, active);
 #ifdef _HAVE_VRRP_VMAC_
 	install_keyword("use_vmac", &vrrp_vmac_handler);
@@ -1003,11 +1007,13 @@ init_vrrp_keywords(bool active)
 	install_keyword("higher_prio_send_advert", &vrrp_higher_prio_send_advert_handler);
 #if defined _WITH_VRRP_AUTH_
 	install_keyword("authentication", NULL);
+	//为authentication安装更深层命令
 	install_sublevel();
 	install_keyword("auth_type", &vrrp_auth_type_handler);
 	install_keyword("auth_pass", &vrrp_auth_pass_handler);
 	install_sublevel_end();
 #endif
+	//安装vrrp_script命令
 	install_keyword_root("vrrp_script", &vrrp_script_handler, active);
 	install_keyword("script", &vrrp_vscript_script_handler);
 	install_keyword("interval", &vrrp_vscript_interval_handler);

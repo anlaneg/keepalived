@@ -66,6 +66,7 @@ void *strvec_slot(const vector_t *strvec, size_t index)
  * Initialize vector struct.
  * allocalted 'size' slot elements then return vector.
  */
+//申请一个空的vector
 vector_t *
 vector_alloc(void)
 {
@@ -91,6 +92,7 @@ vector_init(unsigned int size)
 #endif
 
 /* allocated one slot */
+//将v扩充VECTOR_DEFAULT_SIZE个字节（默认为1）
 void
 vector_alloc_slot(vector_t *v)
 {

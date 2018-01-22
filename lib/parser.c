@@ -46,8 +46,8 @@
 #define DUMP_KEYWORDS	0
 
 typedef struct _defs {
-	char *name;
-	size_t name_len;
+	char *name;//变量名
+	size_t name_len;//变量名称长度
 	char *value;
 	size_t value_len;
 	bool multiline;
@@ -56,7 +56,7 @@ typedef struct _defs {
 #define DEF_LINE_END	'\n'
 
 /* global vars */
-vector_t *keywords;
+vector_t *keywords;//存放全局的关键字
 bool reload = 0;
 char *config_id;
 
@@ -91,8 +91,10 @@ keyword_alloc(vector_t *keywords_vec, const char *string, void (*handler) (vecto
 {
 	keyword_t *keyword;
 
+	//将keywords_vec增加1个空间
 	vector_alloc_slot(keywords_vec);
 
+	//构造keyword
 	keyword = (keyword_t *) MALLOC(sizeof(keyword_t));
 	keyword->string = string;
 	keyword->handler = (active) ? handler : NULL;
@@ -101,6 +103,7 @@ keyword_alloc(vector_t *keywords_vec, const char *string, void (*handler) (vecto
 	vector_set_slot(keywords_vec, keyword);
 }
 
+//将string存为keywords_vec中第sublevel层的最后一个
 static void
 keyword_alloc_sub(vector_t *keywords_vec, const char *string, void (*handler) (vector_t *))
 {
@@ -108,37 +111,44 @@ keyword_alloc_sub(vector_t *keywords_vec, const char *string, void (*handler) (v
 	keyword_t *keyword;
 
 	/* fetch last keyword */
+	//取出上一个关键字
 	keyword = vector_slot(keywords_vec, vector_size(keywords_vec) - 1);
 
 	/* Don't install subordinate keywords if configuration block inactive */
 	if (!keyword->active)
-		return;
+		return;//无法将此关键字加入，上层关键字不活跃（被置为inactive)
 
 	/* position to last sub level */
+	//开始找次顶层，。。。一直找sublevel层（每次均找最后一个）
 	for (i = 0; i < sublevel; i++)
 		keyword = vector_slot(keyword->sub, vector_size(keyword->sub) - 1);
 
 	/* First sub level allocation */
+	//找到最后一次，如果其没有设置sub,则创建sub
 	if (!keyword->sub)
 		keyword->sub = vector_alloc();
 
 	/* add new sub keyword */
+	//将关键字存入sub中
 	keyword_alloc(keyword->sub, string, handler, true);
 }
 
 /* Exported helpers */
+//增加层数
 void
 install_sublevel(void)
 {
 	sublevel++;
 }
 
+//减少层数
 void
 install_sublevel_end(void)
 {
 	sublevel--;
 }
 
+//安装顶级keyword
 void
 install_keyword_root(const char *string, void (*handler) (vector_t *), bool active)
 {
@@ -159,6 +169,7 @@ install_root_end_handler(void (*handler) (void))
 	keyword->sub_close_handler = handler;
 }
 
+//安装非顶级sub(实际上如果所有的keyword均存入到sub中，这样就不需要install_keyword_root函数了）
 void
 install_keyword(const char *string, void (*handler) (vector_t *))
 {
@@ -225,6 +236,7 @@ free_keywords(vector_t *keywords_vec)
 	vector_free(keywords_vec);
 }
 
+//传入的字符串是一组token流，解析这组token,记录在vector中
 vector_t *
 alloc_strvec(char *string)
 {
@@ -238,14 +250,17 @@ alloc_strvec(char *string)
 	cp = string;
 
 	/* Skip white spaces */
+	//跳过前面的空格
 	while (isspace((int) *cp) && *cp != '\0')
 		cp++;
 
 	/* Return if there is only white spaces */
+	//空白行
 	if (*cp == '\0')
 		return NULL;
 
 	/* Return if string begin with a comment */
+	//注释行
 	if (*cp == '!' || *cp == '#')
 		return NULL;
 
@@ -257,29 +272,35 @@ alloc_strvec(char *string)
 
 		/* Save a quoted string without the "s as a single string */
 		if (*cp == '"') {
+			//遇到字符串
 			start++;
 			if (!(cp = strchr(start, '"'))) {
 				log_message(LOG_INFO, "Unmatched quote: '%s'", string);
 				return strvec;
 			}
-			str_len = (size_t)(cp - start);
+			str_len = (size_t)(cp - start);//记录字符串长度
 			cp++;
 		} else {
+			//遇到一个token
 			while (!isspace((int) *cp) && *cp != '\0' && *cp != '"'
 						   && *cp != '!' && *cp != '#')
 				cp++;
-			str_len = (size_t)(cp - start);
+			str_len = (size_t)(cp - start);//记录token的长度
 		}
+		//保存token
 		token = MALLOC(str_len + 1);
 		memcpy(token, start, str_len);
 		token[str_len] = '\0';
 
 		/* Alloc & set the slot */
+		//将token存入到strvec中
 		vector_alloc_slot(strvec);
 		vector_set_slot(strvec, token);
 
+		//跳过下一个token的前导空格
 		while (isspace((int) *cp) && *cp != '\0')
 			cp++;
+		//跳过注释的后半载行，或者到达行尾
 		if (*cp == '\0' || *cp == '!' || *cp == '#')
 			return strvec;
 	}
@@ -300,13 +321,14 @@ process_stream(vector_t *keywords_vec, int need_bob)
 	int bob_needed = 0;
 
 	buf = MALLOC(MAXBUF);
+	//读一行数据，展开$指明的变量，处理include指令
 	while (read_line(buf, MAXBUF)) {
 		strvec = alloc_strvec(buf);
 
 		if (!strvec)
 			continue;
 
-		str = vector_slot(strvec, 0);
+		str = vector_slot(strvec, 0);//取解析的第一个token
 
 		if (skip_sublevel == -1) {
 			/* There wasn't a '{' on the keyword line */
@@ -356,10 +378,12 @@ process_stream(vector_t *keywords_vec, int need_bob)
 			break;
 		}
 
+		//将str与keywords_vec中的值进行匹配，匹配命令
 		for (i = 0; i < vector_size(keywords_vec); i++) {
 			keyword_vec = vector_slot(keywords_vec, i);
 
 			if (!strcmp(keyword_vec->string, str)) {
+				//str与keyword_vec匹配成功
 				if (!keyword_vec->active) {
 					if (!strcmp(vector_slot(strvec, vector_size(strvec)-1), BOB))
 						skip_sublevel = 1;
@@ -381,9 +405,11 @@ process_stream(vector_t *keywords_vec, int need_bob)
 						bob_needed = 1;
 				}
 
+				//与keyword_vec匹配，调用回调，传入本行解析的strvec
 				if (keyword_vec->handler)
 					(*keyword_vec->handler) (strvec);
 
+				//如果此keyword_vec有内部命令，则递归处理
 				if (keyword_vec->sub) {
 					kw_level++;
 					process_stream(keyword_vec->sub, bob_needed);
@@ -431,7 +457,9 @@ read_conf_file(const char *conf_file)
 		return true;
 	}
 
+	//遍历通配的文件
 	for (i = 0; i < globbuf.gl_pathc; i++) {
+		//跳过目录
 		if (globbuf.gl_pathv[i][strlen(globbuf.gl_pathv[i])-1] == '/') {
 			/* This is a directory - so skip */
 			continue;
@@ -439,6 +467,7 @@ read_conf_file(const char *conf_file)
 
 		log_message(LOG_INFO, "Opening file '%s'.", globbuf.gl_pathv[i]);
 		stream = fopen(globbuf.gl_pathv[i], "r");
+		//跳过打不开的文件
 		if (!stream) {
 			log_message(LOG_INFO, "Configuration file '%s' open problem (%s) - skipping"
 				       , globbuf.gl_pathv[i], strerror(errno));
@@ -446,6 +475,7 @@ read_conf_file(const char *conf_file)
 		}
 
 		/* Make sure what we have opened is a regular file, and not for example a directory or executable */
+		//跳过非规则文件，跳过有执行权限的文件
 		if (fstat(fileno(stream), &stb) ||
 		    !S_ISREG(stb.st_mode) ||
 		    (stb.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
@@ -454,6 +484,7 @@ read_conf_file(const char *conf_file)
 			continue;
 		}
 
+		//匹配数加1
 		num_matches++;
 
 		current_stream = stream;
@@ -472,7 +503,7 @@ read_conf_file(const char *conf_file)
 
 			char *confpath = strdup(globbuf.gl_pathv[i]);
 			dirname(confpath);
-			if (chdir(confpath) < 0)
+			if (chdir(confpath) < 0)//改变工作目录到配置文件所在的目录
 				log_message(LOG_INFO, "chdir(%s) error (%s)", confpath, strerror(errno));
 			free(confpath);
 		}
@@ -600,16 +631,20 @@ find_definition(const char *name, size_t len, bool definition)
 		name++;
 	}
 
+	//必须有合法的变量起始符
 	if (!isalpha(*name) && *name != '_')
 		return NULL;
 
 	if (!len) {
+		//如果未指定长度，则计算长度
 		for (len = 1, p = name + 1; *p != '\0' && (isalnum(*p) || *p == '_'); len++, p++);
 
 		/* Check we have a suitable end character */
+		//排除掉不合法的输入（遇到非合法变量起始符或者缺少'}'符
 		if (using_braces && *p != '}')
 			return NULL;
 
+		//
 		if (!using_braces && !definition &&
 		     *p != ' ' && *p != '\t' && *p != '\0')
 			return NULL;
@@ -622,6 +657,7 @@ find_definition(const char *name, size_t len, bool definition)
 	else
 		allow_multiline = false;
 
+	//查找是否有名称为name的def
 	for (e = LIST_HEAD(defs); e; ELEMENT_NEXT(e)) {
 		def = ELEMENT_DATA(e);
 		if (def->name_len == len &&
@@ -630,6 +666,7 @@ find_definition(const char *name, size_t len, bool definition)
 			return def;
 	}
 
+	//未找到
 	return NULL;
 }
 
@@ -728,9 +765,11 @@ check_definition(const char *buf)
 	if (buf[0] != '$')
 		return false;
 
+	//不是有效的变量名开始符，返回false
 	if (!isalpha(buf[1]) && buf[1] != '_')
 		return false;
 
+	//检查是否合法的变量字符，如果遇到'='跳出，如果不合法返回false
 	for (p = &buf[2]; *p; p++) {
 		if (*p == '=')
 			break;
@@ -740,12 +779,15 @@ check_definition(const char *buf)
 			return false;
 	}
 
+	//如果退出时未遇到等号，表明缺少'='号，返回false
 	if (*p != '=')
 		return false;
 
+	//检查def是否存在
 	if ((def = find_definition(&buf[1], p - &buf[1], true)))
 		FREE(def->value);
 	else {
+		//def不存在，创建相应的def并加入到defs链表中
 		def = MALLOC(sizeof(*def));
 		def->name_len = p - &buf[1];
 		str = MALLOC(def->name_len + 1);
@@ -753,17 +795,20 @@ check_definition(const char *buf)
 		str[def->name_len] = '\0';
 		def->name = str;
 
+		//如果defs链表不存在，则创建defs链表
 		if (!LIST_EXISTS(defs))
 			defs = alloc_list(free_definition, NULL);
 		list_add(defs, def);
 	}
 
-	p++;
+	p++;//跳过‘＝’号
 	def->value_len = strlen(p);
 	if (p[def->value_len - 1] == '\\') {
 		/* Remove leading and trailing whitespace */
+		//跳过前导的空格
 		while (isblank(*p))
 			p++, def->value_len--;
+		//跳过结尾的空格
 		while (def->value_len >= 2) {
 			if (isblank(p[def->value_len - 2]))
 				def->value_len--;
@@ -774,11 +819,13 @@ check_definition(const char *buf)
 			p += def->value_len;
 			def->value_len = 0;
 		}
+		//标记为多行
 		def->multiline = true;
 	} else
 		def->multiline = false;
 	str = MALLOC(def->value_len + 1);
 	strcpy(str, p);
+	//设置str
 	def->value = str;
 
 	return def;
@@ -816,20 +863,24 @@ read_line(char *buf, size_t size)
 				next_ptr = end + 1;
 			}
 		}
+		//读取一行数据
 		else if (!fgets(buf, (int)size, current_stream))
 		{
+			//文件到达结尾，退出循环
 			eof = true;
 			buf[0] = '\0';
 			break;
 		}
 
 		/* Remove trailing <CR>/<LF> */
+		//移除\n或者\r
 		len = strlen(buf);
 		while (len && (buf[len-1] == '\n' || buf[len-1] == '\r'))
 			buf[--len] = '\0';
 
 		/* Handle multi-line definitions */
 		if (multiline_param_def) {
+			//多行处理
 			/* Remove leading and trailing spaces and tabs */
 			text_start = buf + strspn(buf, " \t");
 			len -= text_start - buf;
@@ -863,9 +914,11 @@ read_line(char *buf, size_t size)
 			continue;
 		}
 
+		//跳过空行
 		if (len == 0)
 			continue;
 
+		//跳过起始的空格及tab符，跳过trim后的空行
 		text_start = buf + strspn(buf, " \t");
 		if (text_start[0] == '\0') {
 			buf[0] = '\0';
@@ -874,6 +927,7 @@ read_line(char *buf, size_t size)
 
 		recheck = false;
 		do {
+			//处理以@符开头的行
 			if (text_start[0] == '@') {
 				/* If the line starts '@', check the following word matches the system id.
 				   @^ reverses the sense of the match */
@@ -905,6 +959,7 @@ read_line(char *buf, size_t size)
 				text_start += strspn(text_start, " \t");
 			}
 
+			//遇着‘$'按变量处理
 			if (text_start[0] == '$' && (def = check_definition(text_start))) {
 				/* check_definition() saves the definition */
 				if (def->multiline)
@@ -913,6 +968,7 @@ read_line(char *buf, size_t size)
 				break;
 			}
 
+			//变量展开
 			if (!LIST_ISEMPTY(defs) && strchr(text_start, '$')) {
 				next_ptr1 = replace_param(buf, size, !!next_ptr);
 				if (!next_ptr)
@@ -922,7 +978,7 @@ read_line(char *buf, size_t size)
 					recheck = true;
 			}
 		} while (recheck);
-	} while (buf[0] == '\0' || check_include(buf));
+	} while (buf[0] == '\0' || check_include(buf));//include指令处理
 
 	return !eof;
 }
@@ -1082,7 +1138,7 @@ init_data(const char *conf_file, vector_t * (*init_keywords) (void))
 	current_keywords = keywords;
 
 	register_null_strvec_handler(null_strvec);
-	read_conf_file(conf_file);
+	read_conf_file(conf_file);//读取配置文件
 	unregister_null_strvec_handler();
 
 	/* Close the password database if it was opened */
