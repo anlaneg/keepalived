@@ -46,4 +46,5 @@ stamp-h?
 parts/
 prime/
 stage/
+.autotools
 keepalived*.snap
