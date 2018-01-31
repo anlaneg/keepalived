@@ -362,6 +362,7 @@ dump_vrrp(void *data)
 #endif
 }
 
+//新建新的vrrp_group
 void
 alloc_vrrp_sync_group(char *gname)
 {
