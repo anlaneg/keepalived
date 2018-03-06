@@ -79,7 +79,9 @@ static int print_vrrp_stats(thread_t * thread);
 #ifdef _WITH_JSON_
 static int print_vrrp_json(thread_t * thread);
 #endif
+#ifndef _DEBUG_
 static int reload_vrrp_thread(thread_t * thread);
+#endif
 
 static char *vrrp_syslog_ident;
 
@@ -106,7 +108,8 @@ stop_vrrp(int status)
 	/* Ensure any interfaces are in backup mode,
 	 * sending a priority 0 vrrp message
 	 */
-	restore_vrrp_interfaces();
+	if (!__test_bit(DONT_RELEASE_VRRP_BIT, &debug))
+		restore_vrrp_interfaces();
 
 #ifdef _HAVE_LIBIPTC_
 	iptables_fini();
@@ -334,6 +337,7 @@ start_vrrp(void)
 		list ifl;
 
 		dump_global_data(global_data);
+		dump_list(garp_delay);
 		dump_vrrp_data(vrrp_data);
 		ifl = get_if_list();
 		if (!LIST_ISEMPTY(ifl))
@@ -350,10 +354,51 @@ start_vrrp(void)
 			 VRRP_DISPATCHER);
 }
 
+#ifndef _DEBUG_
+static int
+send_reload_advert_thread(thread_t *thread)
+{
+	vrrp_t *vrrp = THREAD_ARG(thread);
+
+	if (vrrp->state == VRRP_STATE_MAST)
+		vrrp_send_adv(vrrp, vrrp->effective_priority);
+
+	/* If this is the last vrrp instance to send an advert, schedule the
+	 * actual reload. */
+	if (THREAD_VAL(thread))
+		thread_add_event(master, reload_vrrp_thread, NULL, 0);
+
+	return 0;
+}
+
 static void
 sighup_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
-	thread_add_event(master, reload_vrrp_thread, NULL, 0);
+	element e;
+	vrrp_t *vrrp;
+	int num_master_inst = 0;
+	int i;
+
+	/* We want to send adverts for the vrrp instances which are
+	 * in master state. After that the reload can be initiated */
+	if (!LIST_ISEMPTY(vrrp_data->vrrp)) {
+		for (e = LIST_HEAD(vrrp_data->vrrp); e; ELEMENT_NEXT(e)) {
+			vrrp = ELEMENT_DATA(e);
+			if (vrrp->state == VRRP_STATE_MAST)
+				num_master_inst++;
+		}
+
+		for (e = LIST_HEAD(vrrp_data->vrrp), i = 0; e; ELEMENT_NEXT(e)) {
+			vrrp = ELEMENT_DATA(e);
+			if (vrrp->state == VRRP_STATE_MAST) {
+				i++;
+				thread_add_event(master, send_reload_advert_thread, vrrp, i == num_master_inst);
+			}
+		}
+	}
+
+	if (num_master_inst == 0)
+		thread_add_event(master, reload_vrrp_thread, NULL, 0);
 }
 
 static void
@@ -467,6 +512,7 @@ reload_vrrp_thread(__attribute__((unused)) thread_t * thread)
 
 	return 0;
 }
+#endif
 
 static int
 print_vrrp_data(__attribute__((unused)) thread_t * thread)
@@ -604,8 +650,10 @@ start_vrrp_child(void)
 	 */
 	UNSET_RELOAD;
 
+#ifndef _DEBUG_
 	/* Signal handling initialization */
 	vrrp_signal_init();
+#endif
 
 #ifdef _LIBNL_DYNAMIC_
 	libnl_init();
@@ -613,6 +661,10 @@ start_vrrp_child(void)
 
 	/* Start VRRP daemon */
 	start_vrrp();
+
+#ifdef _DEBUG_
+	return 0;
+#endif
 
 	/* Launch the scheduling I/O multiplexer */
 	launch_scheduler();

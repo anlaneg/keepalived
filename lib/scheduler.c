@@ -786,7 +786,8 @@ retry:	/* When thread can't fetch try to find next thread again. */
 
 	//将信号读取的fd加入到read集里
 	signal_fd = signal_rfd();
-	FD_SET(signal_fd, &readfd);
+	if (signal_fd != -1)
+		FD_SET(signal_fd, &readfd);
 
 #ifdef _WITH_SNMP_
 	/* When SNMP is enabled, we may have to select() on additional
@@ -808,6 +809,12 @@ retry:	/* When thread can't fetch try to find next thread again. */
 	/* we have to save errno here because the next syscalls will set it */
 	old_errno = errno;
 
+	if (ret < 0 && old_errno != EINTR) {
+		/* Real error. */
+		DBG("select error: %s", strerror(old_errno));
+		assert(0);
+	}
+
 	/* Handle SNMP stuff */
 #ifdef _WITH_SNMP_
 	if (ret > 0)
@@ -823,12 +830,6 @@ retry:	/* When thread can't fetch try to find next thread again. */
 
 	/* Update current time */
 	set_time_now();
-
-	if (ret < 0 && old_errno != EINTR) {
-		/* Real error. */
-		DBG("select error: %s", strerror(old_errno));
-		assert(0);
-	}
 
 	/* Timeout children */
 	//整理出超时的子线程，将其加入到ready中，置其类型为child_timeout

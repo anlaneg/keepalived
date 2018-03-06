@@ -1732,8 +1732,12 @@ vrrp_state_master_rx(vrrp_t * vrrp, char *buf, ssize_t buflen)
 		   (hd->priority == vrrp->effective_priority &&
 		    addr_cmp > 0)) {
 
-		log_message(LOG_INFO, "VRRP_Instance(%s) Received advert with higher priority %d, ours %d"
-				    , vrrp->iname, hd->priority, vrrp->effective_priority);
+		if (hd->priority > vrrp->effective_priority)
+			log_message(LOG_INFO, "VRRP_Instance(%s) Master received advert with higher priority %d, ours %d"
+					    , vrrp->iname, hd->priority, vrrp->effective_priority);
+		else
+			log_message(LOG_INFO, "VRRP_Instance(%s) Master received advert with same priority %d but higher IP address than ours (%s)"
+					    , vrrp->iname, hd->priority, inet_sockaddrtos(&vrrp->pkt_saddr));
 #ifdef _WITH_VRRP_AUTH_
 		if (proto == IPPROTO_IPSEC_AH) {
 			ah = (ipsec_ah_t *) (buf + sizeof(struct iphdr));
@@ -2558,8 +2562,7 @@ vrrp_complete_init(void)
 		next = e->next;
 		sgroup = ELEMENT_DATA(e);
 		vrrp_sync_set_group(sgroup);
-		if (LIST_ISEMPTY(sgroup->index_list) ||
-			LIST_SIZE(sgroup->index_list) <= 1) {
+		if (LIST_ISEMPTY(sgroup->index_list)) {
 			free_list_element(vrrp_data->vrrp_sync_group, e);
 			continue;
 		}
@@ -2796,7 +2799,7 @@ restore_vrrp_state(vrrp_t *old_vrrp, vrrp_t *vrrp)
 	bool added_ip_addr = false;
 
 	/* Keep VRRP state, ipsec AH seq_number */
-	vrrp->state = old_vrrp->state;
+	vrrp->state = old_vrrp->state == VRRP_STATE_MAST ? VRRP_STATE_MASTER_RELOAD : old_vrrp->state;
 	vrrp->wantstate = old_vrrp->state;
 	if (!old_vrrp->sync)
 		vrrp->effective_priority = old_vrrp->effective_priority;

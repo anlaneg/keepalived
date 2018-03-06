@@ -108,6 +108,9 @@ dump_list(list l)
 {
 	element e;
 
+	if (LIST_ISEMPTY(l))
+		return;
+
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e))
 		if (l->dump)
 			(*l->dump) (e->data);

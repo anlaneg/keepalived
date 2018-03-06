@@ -31,6 +31,10 @@
    you don't. */
 #undef HAVE_DECL_ETHERTYPE_IPV6
 
+/* Define to 1 if you have the declaration of `FRA_L3MDEV', and to 0 if you
+   don't. */
+#undef HAVE_DECL_FRA_L3MDEV
+
 /* Define to 1 if you have the declaration of `FRA_OIFNAME', and to 0 if you
    don't. */
 #undef HAVE_DECL_FRA_OIFNAME
@@ -139,6 +143,10 @@
    don't. */
 #undef HAVE_DECL_RTAX_CC_ALGO
 
+/* Define to 1 if you have the declaration of `RTAX_FASTOPEN_NO_COOKIE', and
+   to 0 if you don't. */
+#undef HAVE_DECL_RTAX_FASTOPEN_NO_COOKIE
+
 /* Define to 1 if you have the declaration of `RTAX_QUICKACK', and to 0 if you
    don't. */
 #undef HAVE_DECL_RTAX_QUICKACK
@@ -200,8 +208,8 @@
 /* Define to 1 if ipset supports iface type */
 #undef HAVE_IPSET_ATTR_IFACE
 
-/* Define to 1 if you have the <json-c/json.h> header file. */
-#undef HAVE_JSON_C_JSON_H
+/* Define to 1 if you have the <json.h> header file. */
+#undef HAVE_JSON_H
 
 /* Define to 1 if you have the `crypto' library (-lcrypto). */
 #undef HAVE_LIBCRYPTO
@@ -476,6 +484,9 @@
 
 /* Define to 1 if libipvs can use netlink */
 #undef LIBIPVS_USE_NL
+
+/* The type of parameter __line passed to __assert_fail() */
+#undef LINE_type
 
 /* Define to 1 if <linux/netlink.h> needs <sys/socket.h> */
 #undef NETLINK_H_NEEDS_SYS_SOCKET_H

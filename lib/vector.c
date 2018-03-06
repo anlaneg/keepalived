@@ -68,7 +68,7 @@ void *strvec_slot(const vector_t *strvec, size_t index)
  */
 //申请一个空的vector
 vector_t *
-vector_alloc(void)
+vector_alloc_r(void)
 {
 	vector_t *v = (vector_t *) MALLOC(sizeof(vector_t));
 	return v;
@@ -94,7 +94,7 @@ vector_init(unsigned int size)
 /* allocated one slot */
 //将v扩充VECTOR_DEFAULT_SIZE个字节（默认为1）
 void
-vector_alloc_slot(vector_t *v)
+vector_alloc_slot_r(vector_t *v)
 {
 	v->allocated += VECTOR_DEFAULT_SIZE;
 	if (v->slot)
@@ -288,9 +288,10 @@ vector_only_index_free(void *slot)
 #endif
 
 void
-vector_free(vector_t *v)
+vector_free_r(vector_t *v)
 {
-	FREE(v->slot);
+	if (v->slot)
+		FREE(v->slot);
 	FREE(v);
 }
 
