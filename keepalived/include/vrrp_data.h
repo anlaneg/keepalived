@@ -59,8 +59,8 @@ typedef struct _vrrp_data {
 	list			static_routes;
 	list			static_rules;
 	list			vrrp_sync_group;
-	list			vrrp;
-	list			vrrp_index;
+	list			vrrp;//挂接系统所有vrrp实例
+	list			vrrp_index;//通过vrid,fd查找vrrp结构的hash表
 	list			vrrp_index_fd;
 	list			vrrp_socket_pool;
 	list			vrrp_script;

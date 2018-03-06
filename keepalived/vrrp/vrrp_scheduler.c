@@ -100,6 +100,7 @@ static int vrrp_script_thread(thread_t * thread);
 
 static int vrrp_read_dispatcher_thread(thread_t *);
 
+//vrrp状态机
 static struct {
 	void (*read) (vrrp_t *, char *, ssize_t);
 	void (*read_timeout) (vrrp_t *);
@@ -107,10 +108,10 @@ static struct {
 {
 /*    Stream Read Handlers      |    Stream Read_to handlers   *
  *------------------------------+------------------------------*/
-	{NULL,				NULL},
-	{vrrp_backup,			vrrp_goto_master},	/*  BACKUP          */
-	{vrrp_leave_master,		vrrp_master},		/*  MASTER          */
-	{vrrp_leave_fault,		vrrp_fault},		/*  FAULT           */
+	{NULL,				NULL},//初始化状态
+	{vrrp_backup,			vrrp_goto_master},	/*  BACKUP          *///备份状态
+	{vrrp_leave_master,		vrrp_master},		/*  MASTER          *///主状态
+	{vrrp_leave_fault,		vrrp_fault},		/*  FAULT           *///失效状态
 	{vrrp_become_master,		vrrp_goto_master}	/*  GOTO_MASTER     */
 };
 
@@ -151,6 +152,7 @@ static struct {
  *    o F->F: To speed up FAULT state transition if group is not already
  *            synced to FAULT state.
  */
+//自动机状态变换时回调处理，共计VRRP_MAX_TSM_STATE*VRRP_MAX_TSM_STATE种情况
 static struct {
 	void (*handler) (vrrp_t *);
 } VRRP_TSM[VRRP_MAX_TSM_STATE + 1][VRRP_MAX_TSM_STATE + 1] =
@@ -166,6 +168,7 @@ static void
 vrrp_smtp_notifier(vrrp_t * vrrp)
 {
 	if (vrrp->smtp_alert) {
+		//vrrp状态切换时，发送smtp告警
 		if (vrrp->state == VRRP_STATE_MAST)
 			smtp_alert(NULL, vrrp, NULL,
 				   "Entering MASTER state",
@@ -207,6 +210,7 @@ vrrp_init_state(list l)
 	vrrp_sgroup_t *vgroup;
 	element e;
 
+	//遍历所有vrrp实例
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		vrrp = ELEMENT_DATA(e);
 
@@ -290,9 +294,9 @@ vrrp_init_state(list l)
 
 			/* Set BACKUP state */
 			vrrp_restore_interface(vrrp, false, false);
-			vrrp->state = VRRP_STATE_BACK;
-			vrrp_smtp_notifier(vrrp);
-			notify_instance_exec(vrrp, VRRP_STATE_BACK);
+			vrrp->state = VRRP_STATE_BACK;//置为backup状态
+			vrrp_smtp_notifier(vrrp);//smtp通知
+			notify_instance_exec(vrrp, VRRP_STATE_BACK);//其它script,dbus,fifo通知
 #ifdef _WITH_SNMP_VRRP_
 			vrrp_snmp_instance_trap(vrrp);
 #endif
@@ -451,6 +455,7 @@ vrrp_register_workers(list l)
 	element e;
 
 	/* Init compute timer */
+	//置为0
 	memset(&timer, 0, sizeof (struct timeval));
 
 	/* Init the VRRP instances state */
@@ -1047,21 +1052,28 @@ vrrp_dispatcher_read(sock_t * sock)
 	memset(vrrp_buffer, 0, vrrp_buffer_len);
 
 	/* read & affect received buffer */
+	//自sock->fd_in中读取vrrp报文
 	len = recvfrom(sock->fd_in, vrrp_buffer, vrrp_buffer_len, 0,
 		       (struct sockaddr *) &src_addr, &src_addr_len);
+	//偏多到vrrp报文头部
 	hd = vrrp_get_header(sock->family, vrrp_buffer, &proto);
 
 	/* Searching for matching instance */
+	//通过vrid,fd查找vrrp结构
 	vrrp = vrrp_index_lookup(hd->vrid, sock->fd_in);
 
 	/* If no instance found => ignore the advert */
 	if (!vrrp)
+		//收到了一个我们不存在的vrrp id,忽略此通告
 		return sock->fd_in;
 
+	//设置报文源地址
 	vrrp->pkt_saddr = src_addr;
 
 	/* Run the FSM handler */
+	//取当前状态
 	prev_state = vrrp->state;
+	//使当前状态去消费当前读到的报文,完成新状态的赋值
 	VRRP_FSM_READ(vrrp, vrrp_buffer, len);
 
 	/* handle instance synchronization */
@@ -1070,6 +1082,7 @@ vrrp_dispatcher_read(sock_t * sock)
 //	       , prev_state
 //	       , vrrp->state
 //	       , vrrp->wantstate);
+	//调用状态变换时的action
 	VRRP_TSM_HANDLE(prev_state, vrrp);
 
 	/*
@@ -1101,6 +1114,7 @@ vrrp_read_dispatcher_thread(thread_t * thread)
 	/* register next dispatcher thread */
 	vrrp_timer = vrrp_timer_fd(fd);
 	if (fd == -1)
+		//添加定时器
 		sock->thread = thread_add_timer(thread->master, vrrp_read_dispatcher_thread,
 						sock, vrrp_timer);
 	else

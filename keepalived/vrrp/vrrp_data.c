@@ -448,7 +448,7 @@ alloc_vrrp(char *iname)
 	new->skip_check_adv_addr = global_data->vrrp_skip_check_adv_addr;
 	new->strict_mode = PARAMETER_UNSET;
 
-	list_add(vrrp_data->vrrp, new);
+	list_add(vrrp_data->vrrp, new);//将新创建的vrrp结构加入到vrrp链表中
 }
 
 void

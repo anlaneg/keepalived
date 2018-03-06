@@ -355,6 +355,7 @@ signal_handler_destroy(void)
 
 /* Called prior to exec'ing a script. The script can reasonably
  * expect to have the standard signal disposition */
+//将信号处理函数还原
 void
 signal_handler_script(void)
 {

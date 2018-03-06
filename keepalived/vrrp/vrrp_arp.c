@@ -50,15 +50,17 @@ static ssize_t send_arp(ip_address_t *ipaddress)
 	/* Build the dst device */
 	memset(&sll, 0, sizeof(sll));
 	sll.sll_family = AF_PACKET;
+	//填充mac地址
 	memcpy(sll.sll_addr, IF_HWADDR(ipaddress->ifp), ETH_ALEN);
-	sll.sll_halen = ETHERNET_HW_LEN;
-	sll.sll_ifindex = (int)IF_INDEX(ipaddress->ifp);
+	sll.sll_halen = ETHERNET_HW_LEN;//地址长度
+	sll.sll_ifindex = (int)IF_INDEX(ipaddress->ifp);//自哪个接口发出
 
 	if (__test_bit(LOG_DETAIL_BIT, &debug))
 		log_message(LOG_INFO, "Sending gratuitous ARP on %s for %s",
 			    IF_NAME(ipaddress->ifp), inet_ntop2(ipaddress->u.sin.sin_addr.s_addr));
 
 	/* Send packet */
+	//发送garp报文
 	len = sendto(garp_fd, garp_buffer, sizeof(arphdr_t) + ETHER_HDR_LEN
 		     , 0, (struct sockaddr *)&sll, sizeof(sll));
 	if (len < 0)

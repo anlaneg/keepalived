@@ -270,6 +270,7 @@ vrrp_pkt_len(vrrp_t * vrrp)
 }
 
 /* VRRP header pointer from buffer */
+//取vrrp头部指针
 vrrphdr_t *
 vrrp_get_header(sa_family_t family, char *buf, unsigned *proto)
 {
@@ -277,10 +278,12 @@ vrrp_get_header(sa_family_t family, char *buf, unsigned *proto)
 	vrrphdr_t *hd = NULL;
 
 	if (family == AF_INET) {
+		//定位到ipv4头部
 		iph = (struct iphdr *) buf;
 
 		/* Fill the VRRP header */
 #ifdef _WITH_VRRP_AUTH_
+		//vrrp支持授权方式
 		if (iph->protocol == IPPROTO_IPSEC_AH) {
 			*proto = IPPROTO_IPSEC_AH;
 			hd = (vrrphdr_t *) ((char *) iph + (iph->ihl << 2) +
@@ -290,6 +293,7 @@ vrrp_get_header(sa_family_t family, char *buf, unsigned *proto)
 #endif
 		{
 			*proto = IPPROTO_VRRP;
+			//偏移到vrrp头部
 			hd = (vrrphdr_t *) ((char *) iph + (iph->ihl << 2));
 		}
 	} else if (family == AF_INET6) {
@@ -1510,6 +1514,7 @@ vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 	bool check_addr = false;
 
 	/* Process the incoming packet */
+	//取vrrp头部
 	hd = vrrp_get_header(vrrp->family, buf, &proto);
 	if (!vrrp->skip_check_adv_addr ||
 	    vrrp->master_saddr.ss_family != vrrp->pkt_saddr.ss_family)
@@ -1864,9 +1869,11 @@ open_vrrp_read_socket(sa_family_t family, int proto, ifindex_t idx, bool unicast
 	int fd = -1;
 
 	/* Retreive interface_t */
+	//取对应的interface
 	ifp = if_get_by_ifindex(idx);
 
 	/* open the socket */
+	//创建raw socket
 	fd = socket(family, SOCK_RAW | SOCK_CLOEXEC, proto);
 	if (fd < 0) {
 		int err = errno;
@@ -1879,9 +1886,11 @@ open_vrrp_read_socket(sa_family_t family, int proto, ifindex_t idx, bool unicast
 
 	/* Ensure no unwanted multicast packets are queued to this interface */
 	if (family == AF_INET)
+		//关闭所有组播地址的接受
 		if_setsockopt_mcast_all(family, &fd);
 
 	if (!unicast) {
+		//加入组播组
 		/* Join the VRRP multicast group */
 		if_join_vrrp_group(family, &fd, ifp);
 	}
@@ -1909,12 +1918,15 @@ static void
 close_vrrp_socket(vrrp_t * vrrp)
 {
 	if (LIST_ISEMPTY(vrrp->unicast_peer))
+		//单播列表为空，使vrrp->ifp离开对应组播组
 		if_leave_vrrp_group(vrrp->family, vrrp->fd_in, vrrp->ifp);
 
+	//关闭fd
 	close(vrrp->fd_in);
 	close(vrrp->fd_out);
 }
 
+//创建vrrp新的socket
 int
 new_vrrp_socket(vrrp_t * vrrp)
 {
@@ -1924,7 +1936,7 @@ new_vrrp_socket(vrrp_t * vrrp)
 	bool unicast;
 
 	/* close the desc & open a new one */
-	close_vrrp_socket(vrrp);
+	close_vrrp_socket(vrrp);//关闭对应fd
 	remove_vrrp_fd_bucket(vrrp);
 #ifdef _WITH_VRRP_AUTH_
 	if (vrrp->version == VRRP_VERSION_2)
@@ -1932,14 +1944,17 @@ new_vrrp_socket(vrrp_t * vrrp)
 				IPPROTO_VRRP;
 	else
 #endif
-		proto = IPPROTO_VRRP;
+		proto = IPPROTO_VRRP;//指明vrrp协议
 	ifindex =
 #ifdef _HAVE_VRRP_VMAC_
 		 (__test_bit(VRRP_VMAC_XMITBASE_BIT, &vrrp->vmac_flags)) ? IF_BASE_INDEX(vrrp->ifp) :
 #endif
 									    IF_INDEX(vrrp->ifp);
+	//检查是否单播
 	unicast = !LIST_ISEMPTY(vrrp->unicast_peer);
+	//创建vrrp 读fd
 	vrrp->fd_in = open_vrrp_read_socket(vrrp->family, proto, ifindex, unicast);
+	//创建vrrp 写fd
 	vrrp->fd_out = open_vrrp_send_socket(vrrp->family, proto, ifindex, unicast);
 	alloc_vrrp_fd_bucket(vrrp);
 

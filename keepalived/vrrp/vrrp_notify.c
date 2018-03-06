@@ -35,6 +35,7 @@
 #include "notify.h"
 #include "logger.h"
 
+//根据状态，确定返回对应状态的script
 static notify_script_t*
 get_iscript(vrrp_t * vrrp, int state)
 {
@@ -85,20 +86,21 @@ notify_script_name(char *cmdline)
 	if (!cmdline)
 		return NULL;
 	while (!isspace(*cp) && *cp != '\0')
-		cp++;
+		cp++;//自前向后移动，遇到空格停下来
 	str_len = (size_t)(cp - cmdline);
 	script = MALLOC(str_len + 1);
 	memcpy(script, cmdline, str_len);
 	*(script + str_len) = '\0';
 
-	return script;
+	return script;//返回空格前的为script
 }
 
+//检查文件是否可读取
 static bool
 script_open_literal(char *script)
 {
 	log_message(LOG_DEBUG, "Opening script file %s",script);
-	FILE *fOut = fopen(script, "r");
+	FILE *fOut = fopen(script, "r");//读脚本文件
 	if (!fOut) {
 		log_message(LOG_INFO, "Can't open %s (errno %d %s)", script,
 		       errno, strerror(errno));
@@ -108,9 +110,11 @@ script_open_literal(char *script)
 	return true;
 }
 
+//检查脚本文件是否可打开
 static bool
 script_open(notify_script_t *script)
 {
+	//返回空格前的脚本名称
 	char *name = notify_script_name(script->name);
 	int ret;
 
@@ -161,6 +165,7 @@ notify_fifo(const char *name, int state_num, bool group, uint8_t priority)
 	FREE(line);
 }
 
+//实现fifo通知
 void
 notify_instance_fifo(const vrrp_t *vrrp, int state_num)
 {
@@ -219,16 +224,19 @@ notify_script_exec(notify_script_t* script, const char *type, int state_num, cha
 		return;
 
 	/* Launch the script */
+	//构造参数
 	snprintf(new_script.name, size, "\"%s\" %s \"%s\" %s %d",
 		 script->name, type, name, state, prio);
 	new_script.uid = script->uid;
 	new_script.gid = script->gid;
 
+	//执行脚本
 	notify_exec(&new_script);
 
 	FREE(new_script.name);
 }
 
+//vrrp状态变换，执行相应通知
 int
 notify_instance_exec(vrrp_t * vrrp, int state)
 {
@@ -237,22 +245,26 @@ notify_instance_exec(vrrp_t * vrrp, int state)
 	int ret = 0;
 
 	/* Launch the notify_* script */
+	//脚本存在，执行脚本
 	if (script && script_open(script)) {
 		notify_exec(script);
 		ret = 1;
 	}
 
 	/* Launch the generic notify script */
+	//检查一般性脚本是否存在，或存在，则执行
 	if (gscript && script_open_literal(gscript->name)) {
 		notify_script_exec(gscript, "INSTANCE", state, vrrp->iname,
 				   vrrp->effective_priority);
 		ret = 1;
 	}
 
+	//实现fifo通知
 	notify_instance_fifo(vrrp, state);
 
 #ifdef _WITH_DBUS_
 	if (global_data->enable_dbus)
+		//如果有dbus,则通过dbus进行通知
 		dbus_send_state_signal(vrrp); // send signal to all subscribers
 #endif
 

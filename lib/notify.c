@@ -161,18 +161,20 @@ set_privileges(uid_t uid, gid_t gid)
 }
 
 /* perform a system call */
+//采用uid,gid执行命令行cmdline
 static int
 system_call(const char *cmdline, uid_t uid, gid_t gid)
 {
 	int retval;
 
+	//设置脚本执行的用户及其所属的组
 	if (set_privileges(uid, gid))
 		return -1;
 
 	/* system() fails if SIGCHLD is set to SIG_IGN */
 	signal_set(SIGCHLD, (void*)SIG_DFL, NULL);
 
-	retval = system(cmdline);
+	retval = system(cmdline);//执行脚本
 	if (retval == -1) {
 		/* other error */
 		log_message(LOG_ALERT, "Error exec-ing command: %s", cmdline);
@@ -189,6 +191,7 @@ system_call(const char *cmdline, uid_t uid, gid_t gid)
 	return retval;
 }
 
+//设置信号处理函数为默认函数，重定向stdout,stdin,stderr
 static void
 script_setup(void)
 {
@@ -247,7 +250,7 @@ notify_exec(const notify_script_t *script)
 	if (log_file_name)
 		flush_log_file();
 
-	pid = fork();
+	pid = fork();//创建进程
 
 	/* In case of fork is error. */
 	if (pid < 0) {
@@ -267,7 +270,7 @@ notify_exec(const notify_script_t *script)
 
 	system_call(script->name, script->uid, script->gid);
 
-	exit(0);
+	exit(0);//使进程退出
 }
 
 int

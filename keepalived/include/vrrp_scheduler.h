@@ -42,12 +42,14 @@ extern timeval_t garp_next_time;
 extern thread_t *garp_thread;
 
 /* VRRP FSM Macro */
+//vrrp依据当前状态触发定时器读超时
 #define VRRP_FSM_READ_TO(V)			\
 do {						\
   if ((*(VRRP_FSM[(V)->state].read_timeout)))	\
     (*(VRRP_FSM[(V)->state].read_timeout)) (V);	\
 } while (0)
 
+//vrrp依据当前状态消费读到的报文
 #define VRRP_FSM_READ(V, B, L)			\
 do {						\
   if ((*(VRRP_FSM[(V)->state].read)))		\

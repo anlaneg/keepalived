@@ -48,7 +48,7 @@
 
 typedef struct _vrrphdr {			/* rfc2338.5.1 */
 	uint8_t			vers_type;	/* 0-3=type, 4-7=version */
-	uint8_t			vrid;		/* virtual router id */
+	uint8_t			vrid;		/* virtual router id */ //虚路由id号
 	uint8_t			priority;	/* router priority */
 	uint8_t			naddr;		/* address counter */
 	union {
@@ -166,7 +166,7 @@ typedef enum chksum_compatibility {
 /* parameters per virtual router -- rfc2338.6.1.2 */
 typedef struct _vrrp_t {
 	sa_family_t		family;			/* AF_INET|AF_INET6 */
-	char			*iname;			/* Instance Name */
+	char			*iname;			/* Instance Name */ //vrrp实例名称
 	vrrp_sgroup_t		*sync;			/* Sync group we belong to */
 	vrrp_stats		*stats;			/* Statistics */
 	interface_t		*ifp;			/* Interface we belong to */
@@ -182,6 +182,7 @@ typedef struct _vrrp_t {
 	list			track_ifp;		/* Interface state we monitor */
 	list			track_script;		/* Script state we monitor */
 	struct sockaddr_storage	saddr;			/* Src IP address to use in VRRP IP header */
+	//记录发送方地址
 	struct sockaddr_storage	pkt_saddr;		/* Src IP address received in VRRP IP header */
 	list			unicast_peer;		/* List of Unicast peer to send advert to */
 #ifdef _WITH_UNICAST_CHKSUM_COMPAT_
@@ -234,8 +235,8 @@ typedef struct _vrrp_t {
 	int			init_state;		/* the initial state of the instance */
 #endif
 	int			wantstate;		/* user explicitly wants a state (back/mast) */
-	int			fd_in;			/* IN socket descriptor */
-	int			fd_out;			/* OUT socket descriptor */
+	int			fd_in;			/* IN socket descriptor */ //vrrp读fd
+	int			fd_out;			/* OUT socket descriptor */ //vrrp写fd
 
 	int			debug;			/* Debug level 0-4 */
 
@@ -248,13 +249,13 @@ typedef struct _vrrp_t {
 	int version;		/* VRRP version (2 or 3) */
 
 	/* State transition notification */
-	bool			smtp_alert;
-	bool			notify_exec;
+	bool			smtp_alert;//是否开启了smtp通知
+	bool			notify_exec;//是否开启了script执行功能
 	notify_script_t		*script_backup;
-	notify_script_t		*script_master;
+	notify_script_t		*script_master;//进入master状态时执行
 	notify_script_t		*script_fault;
 	notify_script_t		*script_stop;
-	notify_script_t		*script;
+	notify_script_t		*script;//一般性脚本
 
 	/* rfc2338.6.2 */
 	uint32_t		ms_down_timer;

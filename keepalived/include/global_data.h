@@ -67,11 +67,11 @@ typedef struct _email {
 typedef struct _data {
 	bool				linkbeat_use_polling;
 	char				*router_id;
-	char				*email_from;
-	struct sockaddr_storage		smtp_server;
+	char				*email_from;//发件方邮箱号
+	struct sockaddr_storage		smtp_server;//发邮件用的smtp服务器
 	char				*smtp_helo_name;
 	unsigned long			smtp_connection_to;
-	list				email;
+	list				email;//收件方邮箱号
 #ifdef _WITH_VRRP_
 	interface_t			*default_ifp;		/* Default interface for static addresses */
 #endif
@@ -116,7 +116,7 @@ typedef struct _data {
 	char				checker_process_priority;
 	bool				checker_no_swap;
 #endif
-	notify_fifo_t			notify_fifo;
+	notify_fifo_t			notify_fifo;//通过fifo对外通知
 #ifdef _WITH_VRRP_
 	notify_fifo_t			vrrp_notify_fifo;
 #endif

@@ -47,17 +47,18 @@ vrrp_index_lookup(const int vrid, const int fd)
 {
 	vrrp_t *vrrp;
 	element e;
+	//定位到桶
 	list l = &vrrp_data->vrrp_index[get_vrrp_hash(vrid, fd)];
 
 	/* return if list is empty */
 	if (LIST_ISEMPTY(l))
-		return NULL;
+		return NULL;//无元素，查找失败
 
 	/*
 	 * If list size's is 1 then no collisions. So
 	 * Test and return the singleton.
 	 */
-	if (LIST_SIZE(l) == 1) {
+	if (LIST_SIZE(l) == 1) {//只有单个的情况，检查是否存在
 		vrrp = ELEMENT_DATA(LIST_HEAD(l));
 		return ((vrrp->fd_in == fd) && (vrrp->vrid == vrid)) ? vrrp : NULL;
 	}
@@ -67,6 +68,7 @@ vrrp_index_lookup(const int vrid, const int fd)
 	 * vrid is used on a different interface. We perform
 	 * a fd lookup as collisions solver.
 	 */
+	//有多个时遍历查找是否存在
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		vrrp =  ELEMENT_DATA(e);
 		if ((vrrp->fd_in == fd) && (vrrp->vrid == vrid))

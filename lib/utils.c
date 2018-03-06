@@ -541,6 +541,7 @@ set_std_fd(bool force)
 {
 	int fd;
 
+	//重定向stdout,stdin,stderr
 	if (force || __test_bit(DONT_FORK_BIT, &debug)) {
 		fd = open("/dev/null", O_RDWR);
 		if (fd != -1) {
@@ -552,6 +553,7 @@ set_std_fd(bool force)
 		}
 	}
 
+	//关闭信号处理的pipe
 	signal_pipe_close(STDERR_FILENO+1);
 }
 

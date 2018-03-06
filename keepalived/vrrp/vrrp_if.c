@@ -65,6 +65,7 @@ list garp_delay;
 
 /* Helper functions */
 /* Return interface from interface index */
+//给定ifindex找对应的interface
 interface_t *
 if_get_by_ifindex(ifindex_t ifindex)
 {
@@ -74,6 +75,7 @@ if_get_by_ifindex(ifindex_t ifindex)
 	if (LIST_ISEMPTY(if_queue))
 		return NULL;
 
+	//遍历if队列
 	for (e = LIST_HEAD(if_queue); e; ELEMENT_NEXT(e)) {
 		ifp = ELEMENT_DATA(e);
 		if (ifp->ifindex == ifindex)
@@ -125,12 +127,14 @@ if_get_by_ifname(const char *ifname)
 }
 
 /* Return the interface list itself */
+//返回if队列
 list
 get_if_list(void)
 {
 	return if_queue;
 }
 
+//采用old_if_queue保存旧的，将if_queue置空
 void
 reset_interface_queue(void)
 {
@@ -298,6 +302,7 @@ if_ethtool_probe(const char *ifname)
 	return status;
 }
 
+//取if的标记位（自kernel)
 static void
 if_ioctl_flags(interface_t * ifp)
 {
@@ -374,6 +379,7 @@ set_default_garp_delay(void)
 	}
 }
 
+//dump interface
 static void
 dump_if(void *data)
 {
@@ -384,29 +390,35 @@ dump_if(void *data)
 	char addr_str[INET6_ADDRSTRLEN];
 
 	log_message(LOG_INFO, "------< NIC >------");
-	log_message(LOG_INFO, " Name = %s", ifp->ifname);
-	log_message(LOG_INFO, " index = %u", ifp->ifindex);
+	log_message(LOG_INFO, " Name = %s", ifp->ifname);//显示接口名称
+	log_message(LOG_INFO, " index = %u", ifp->ifindex);//显示ifindex
 	log_message(LOG_INFO, " IPv4 address = %s", inet_ntop2(ifp->sin_addr.s_addr));
 	inet_ntop(AF_INET6, &ifp->sin6_addr, addr_str, sizeof(addr_str));
 	log_message(LOG_INFO, " IPv6 address = %s", addr_str);
 
 	/* FIXME: Hardcoded for ethernet */
+	//显示mac地址
 	if (ifp->hw_type == ARPHRD_ETHER)
 		log_message(LOG_INFO, " MAC = %.2x:%.2x:%.2x:%.2x:%.2x:%.2x",
 		       ifp->hw_addr[0], ifp->hw_addr[1], ifp->hw_addr[2]
 		       , ifp->hw_addr[3], ifp->hw_addr[4], ifp->hw_addr[5]);
 
+	//接口up
 	if (ifp->flags & IFF_UP)
 		log_message(LOG_INFO, " is UP");
 
+	//接口可收发包
 	if (ifp->flags & IFF_RUNNING)
 		log_message(LOG_INFO, " is RUNNING");
 
+	//接口down
 	if (!(ifp->flags & IFF_UP) && !(ifp->flags & IFF_RUNNING))
 		log_message(LOG_INFO, " is DOWN");
 
+	//接口mtu
 	log_message(LOG_INFO, " MTU = %d", ifp->mtu);
 
+	//接口类型
 	switch (ifp->hw_type) {
 	case ARPHRD_LOOPBACK:
 		log_message(LOG_INFO, " HW Type = LOOPBACK");
@@ -449,12 +461,14 @@ dump_if(void *data)
 	}
 }
 
+//初始化if_queue
 static void
 init_if_queue(void)
 {
 	if_queue = alloc_list(free_if, dump_if);
 }
 
+//向if_queue中加入interface
 void
 if_add_queue(interface_t * ifp)
 {
@@ -466,6 +480,7 @@ if_linkbeat_refresh_thread(thread_t * thread)
 {
 	interface_t *ifp = THREAD_ARG(thread);
 
+	//针对不同类型，刷新linkbeat
 	if (IF_MII_SUPPORTED(ifp))
 		ifp->linkbeat = (if_mii_probe(ifp->ifname)) ? 1 : 0;
 	else if (IF_ETHTOOL_SUPPORTED(ifp))
@@ -480,6 +495,7 @@ if_linkbeat_refresh_thread(thread_t * thread)
 	if_ioctl_flags(ifp);
 
 	/* Register next polling thread */
+	//注册下次事件
 	thread_add_timer(master, if_linkbeat_refresh_thread, ifp, POLLING_DELAY);
 	return 0;
 }
@@ -491,6 +507,7 @@ init_if_linkbeat(void)
 	element e;
 	int status;
 
+	//遍历if_queue,检查ifp是何种类型，定义linkbeat
 	for (e = LIST_HEAD(if_queue); e; ELEMENT_NEXT(e)) {
 		ifp = ELEMENT_DATA(e);
 		ifp->lb_type = LB_IOCTL;
@@ -556,6 +573,7 @@ init_interface_linkbeat(void)
 	}
 }
 
+//将ifp加入到指定组播组
 int
 if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp)
 {
@@ -574,15 +592,19 @@ if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp)
 
 	if (family == AF_INET) {
 		memset(&imr, 0, sizeof(imr));
+		//设置组播组
 		imr.imr_multiaddr = ((struct sockaddr_in *) &global_data->vrrp_mcast_group4)->sin_addr;
+		//设置本端接口
 		imr.imr_ifindex = (int)IF_INDEX(ifp);
 
 		/* -> Need to handle multicast convergance after takeover.
 		 * We retry until multicast is available on the interface.
 		 */
+		//将本接口加入到对应的组播组
 		ret = setsockopt(*sd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
 				 (char *) &imr, (socklen_t)sizeof(struct ip_mreqn));
 	} else {
+		//icmpv6加入组播组方式
 		memset(&imr6, 0, sizeof(imr6));
 		imr6.ipv6mr_multiaddr = ((struct sockaddr_in6 *) &global_data->vrrp_mcast_group6)->sin6_addr;
 		imr6.ipv6mr_interface = IF_INDEX(ifp);
@@ -590,6 +612,7 @@ if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp)
 				 (char *) &imr6, (socklen_t)sizeof(struct ipv6_mreq));
 	}
 
+	//加入组播组失败
 	if (ret < 0) {
 		log_message(LOG_INFO, "(%s): cant do IP%s_ADD_MEMBERSHIP errno=%s (%d)",
 			    ifp->ifname, (family == AF_INET) ? "" : "V6", strerror(errno), errno);
@@ -600,6 +623,7 @@ if_join_vrrp_group(sa_family_t family, int *sd, interface_t *ifp)
 	return *sd;
 }
 
+//使ifp离开某组播组
 int
 if_leave_vrrp_group(sa_family_t family, int sd, interface_t *ifp)
 {

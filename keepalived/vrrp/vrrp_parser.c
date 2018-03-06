@@ -183,6 +183,7 @@ vrrp_gglobal_tracking_handler(__attribute__((unused)) vector_t *strvec)
 	vrrp_sgroup_t *vgroup = LIST_TAIL_DATA(vrrp_data->vrrp_sync_group);
 	vgroup->global_tracking = 1;
 }
+//命令处理，创建vrrp
 static void
 vrrp_handler(vector_t *strvec)
 {
@@ -191,6 +192,7 @@ vrrp_handler(vector_t *strvec)
 	vrrp_t *vrrp;
 	char *iname;
 
+	//参数不合法，必须指定vrrp的实例名称
 	if (vector_count(strvec) != 2) {
 		log_message(LOG_INFO, "vrrp_instance must have a name");
 		skip_block();
@@ -200,11 +202,13 @@ vrrp_handler(vector_t *strvec)
 	iname = strvec_slot(strvec,1);
 
 	/* Make sure the vrrp instance doesn't already exist */
+	//检查名称为iname的vrrp是否已存在
 	if (!LIST_ISEMPTY(vrrp_data->vrrp)) {
 		l = vrrp_data->vrrp;
+		//遍历vrrp
 		for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 			vrrp = ELEMENT_DATA(e);
-			if (!strcmp(iname,vrrp->iname)) {
+			if (!strcmp(iname,vrrp->iname)) {//名称相等，报错，已存在
 				log_message(LOG_INFO, "vrrp instance %s already defined", iname );
 				skip_block();
 				return;
@@ -212,6 +216,7 @@ vrrp_handler(vector_t *strvec)
 		}
 	}
 
+	//创建名称为vrrp的实例，并加入vrrp链表
 	alloc_vrrp(iname);
 }
 #ifdef _HAVE_VRRP_VMAC_

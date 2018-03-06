@@ -55,7 +55,7 @@ typedef enum {
 
 /* notify_script details */
 typedef struct _notify_script {
-	char	*name;		/* Script name */
+	char	*name;		/* Script name */ //脚本名称
 	uid_t	uid;		/* uid of user to execute script */
 	gid_t	gid;		/* gid of group to execute script */
 	bool	executable;	/* script is executable for uid:gid */
