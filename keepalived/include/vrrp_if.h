@@ -125,6 +125,7 @@ typedef struct _tracked_if {
 #define IF_MII_SUPPORTED(X) ((X)->lb_type & LB_MII)
 #define IF_ETHTOOL_SUPPORTED(X) ((X)->lb_type & LB_ETHTOOL)
 #define IF_LINKBEAT(X) ((X)->linkbeat)
+//接口标记为up,接口标记含running,且linkbeat为1时返回True
 #define IF_ISUP(X) (((X)->flags & IFF_UP)      && \
 		    ((X)->flags & IFF_RUNNING) && \
 		    if_linkbeat(X))

@@ -188,6 +188,7 @@ typedef struct _vrrp_t {
 #ifdef _WITH_UNICAST_CHKSUM_COMPAT_
 	chksum_compatibility_t	unicast_chksum_compat;	/* Whether v1.3.6 and earlier chksum is used */
 #endif
+	//记录我们认为的master地址
 	struct sockaddr_storage master_saddr;		/* Store last heard Master address */
 	uint8_t			master_priority;	/* Store last heard priority */
 	timeval_t		last_transition;	/* Store transition time */

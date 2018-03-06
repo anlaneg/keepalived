@@ -112,7 +112,7 @@ static struct {
 	{vrrp_backup,			vrrp_goto_master},	/*  BACKUP          *///备份状态
 	{vrrp_leave_master,		vrrp_master},		/*  MASTER          *///主状态
 	{vrrp_leave_fault,		vrrp_fault},		/*  FAULT           *///失效状态
-	{vrrp_become_master,		vrrp_goto_master}	/*  GOTO_MASTER     */
+	{vrrp_become_master,		vrrp_goto_master}	/*  GOTO_MASTER     */ //获得选举资格
 };
 
 /* VRRP TSM (Transition State Matrix) design.
@@ -655,6 +655,7 @@ vrrp_dispatcher_release(vrrp_data_t *data)
 	free_list(&data->vrrp_socket_pool);
 }
 
+//在backup状态时，收到vrrp报文，将调用此函数
 static void
 vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 {
@@ -674,6 +675,7 @@ vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 #endif
 
 	if (!VRRP_ISUP(vrrp)) {
+		//vrrp接口不处于up状态，标记其为FAULT状态
 		vrrp_log_int_down(vrrp);
 		log_message(LOG_INFO, "VRRP_Instance(%s) Now in FAULT state",
 		       vrrp->iname);
@@ -689,6 +691,7 @@ vrrp_backup(vrrp_t * vrrp, char *buffer, ssize_t len)
 	}
 }
 
+//GOTO_MASTER 状态时收到vrrp报文
 static void
 vrrp_become_master(vrrp_t * vrrp,
 #ifndef _WITH_VRRP_AUTH_
@@ -750,6 +753,7 @@ vrrp_ah_sync(vrrp_t *vrrp)
 }
 #endif
 
+//fault(失效)状态时，收到vrrp报文
 static void
 vrrp_leave_fault(vrrp_t * vrrp, char *buffer, ssize_t len)
 {

@@ -452,6 +452,7 @@ vrrp_in_chk(vrrp_t * vrrp, char *buffer, ssize_t buflen_ret, bool check_vip_addr
 		 * the VRRP header
 		 */
 		if (buflen < expected_len) {
+			//报文过短，报文有误
 			log_message(LOG_INFO,
 			       "(%s): ip/vrrp header too short. %zu and expect at least %zu",
 			      vrrp->iname, buflen, expected_len);
@@ -474,6 +475,7 @@ vrrp_in_chk(vrrp_t * vrrp, char *buffer, ssize_t buflen_ret, bool check_vip_addr
 		expected_len += vrrp_pkt_len(vrrp) - sizeof(vrrphdr_t);
 
 		/* MUST verify that the IP TTL is 255 */
+		//ttl必须是255
 		if (LIST_ISEMPTY(vrrp->unicast_peer) && ip->ttl != VRRP_IP_TTL) {
 			log_message(LOG_INFO, "(%s): invalid ttl. %d and expect %d",
 				vrrp->iname, ip->ttl, VRRP_IP_TTL);
@@ -530,6 +532,7 @@ vrrp_in_chk(vrrp_t * vrrp, char *buffer, ssize_t buflen_ret, bool check_vip_addr
 
 	/* MUST verify that the VRID is valid on the receiving interface_t */
 	if (vrrp->vrid != hd->vrid) {
+		//报文中的vrouter id必须与vrrp的vrouter id相等
 		log_message(LOG_INFO,
 		       "(%s): received VRID mismatch. Received %d, Expected %d",
 		       vrrp->iname, hd->vrid, vrrp->vrid);
@@ -1221,6 +1224,7 @@ vrrp_send_adv(vrrp_t * vrrp, uint8_t prio)
 }
 
 /* Received packet processing */
+//校验收到的报文是否正确
 static int
 vrrp_check_packet(vrrp_t * vrrp, char *buf, ssize_t buflen, bool check_vip_addr)
 {
@@ -1505,6 +1509,7 @@ vrrp_state_leave_master(vrrp_t * vrrp)
 }
 
 /* BACKUP state processing */
+//backup状态时，处理收到的vrrp报文
 void
 vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 {
@@ -1518,7 +1523,7 @@ vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 	hd = vrrp_get_header(vrrp->family, buf, &proto);
 	if (!vrrp->skip_check_adv_addr ||
 	    vrrp->master_saddr.ss_family != vrrp->pkt_saddr.ss_family)
-		check_addr = true;
+		check_addr = true;//master的地址与发送方的地址不一致，执行检查
 	else {
 		/* Check if the addresses are different */
 		if (vrrp->pkt_saddr.ss_family == AF_INET) {
@@ -1534,6 +1539,7 @@ vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 	if (ret == VRRP_PACKET_KO || ret == VRRP_PACKET_NULL) {
 		log_message(LOG_INFO, "VRRP_Instance(%s) ignoring received advertisment..."
 				    ,  vrrp->iname);
+		//消息被忽略，更新超时时间
 		if (vrrp->version == VRRP_VERSION_3)
 			vrrp->ms_down_timer = 3 * vrrp->master_adver_int + VRRP_TIMER_SKEW(vrrp);
 		else
@@ -1585,6 +1591,7 @@ vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 			}
 		}
 	} else {
+		//进入master选举
 		log_message(LOG_INFO, "VRRP_Instance(%s) forcing a new MASTER election" , vrrp->iname);
 		vrrp->wantstate = VRRP_STATE_GOTO_MASTER;
 		vrrp_send_adv(vrrp, vrrp->effective_priority);
