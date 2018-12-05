@@ -178,11 +178,8 @@ signal_pending(void)
 #endif
 
 /* Signal flag */
-<<<<<<< HEAD
-//信号处理（所有可处理的信号被通过管道传递，使之支持event机制
-=======
 #ifndef HAVE_SIGNALFD
->>>>>>> upstream/master
+//信号处理（所有可处理的信号被通过管道传递，使之支持event机制
 static void
 signal_handler(int sig)
 {
@@ -231,11 +228,8 @@ signal_set(int signo, void (*func) (void *, int), void *v)
 		func = NULL;
 		v = NULL;
 	}
-<<<<<<< HEAD
-	else
-		//除SIG_IGN及SIG_DFL以外的信号处理函数，统一定义为signal_handler
-		//作者通过这种方式，将信号处理与fd处理统一了。
-=======
+	//除SIG_IGN及SIG_DFL以外的信号处理函数，统一定义为signal_handler
+	//作者通过这种方式，将信号处理与fd处理统一了。
 
 #ifdef HAVE_SIGNALFD
 	sigemptyset(&sset);
@@ -268,7 +262,6 @@ signal_set(int signo, void (*func) (void *, int), void *v)
 		sigmask_func(SIG_UNBLOCK, &sset, NULL);
 #else
 	if (func)
->>>>>>> upstream/master
 		sig.sa_handler = signal_handler;
 	else
 		sig.sa_handler = (void*)func;
@@ -564,29 +557,15 @@ signal_handler_script(void)
 #endif
 }
 
-<<<<<<< HEAD
-/* Handlers callback  */
-//读取信号处理句柄，并触发相应的回调
-=======
 #if HAVE_DECL_RLIMIT_RTTIME == 1
->>>>>>> upstream/master
+//读取信号处理句柄，并触发相应的回调
 void
 set_sigxcpu_handler(void)
 {
-<<<<<<< HEAD
-	int sig;
-
-	//自信号管道中读取发生的信号，并进行处理
-	while(read(signal_pipe[0], &sig, sizeof(int)) == sizeof(int)) {
-		if (sig >= 1 && sig <= SIG_MAX && signal_handler_func[sig-1])
-			signal_handler_func[sig-1](signal_v[sig-1], sig);
-	}
-=======
 	signal_set(SIGXCPU, log_sigxcpu, NULL);
 #ifdef THREAD_DUMP
 	register_signal_handler_address("log_sigxcpu", log_sigxcpu);
 #endif
->>>>>>> upstream/master
 }
 #endif
 

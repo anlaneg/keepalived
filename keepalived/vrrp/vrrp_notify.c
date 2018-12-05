@@ -206,7 +206,6 @@ vrrp_smtp_notifier(vrrp_t * vrrp)
 		vrrp->last_email_state = vrrp->state;
 	}
 }
->>>>>>> upstream/master
 
 /* SMTP alert group notifier */
 static void

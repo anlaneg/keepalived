@@ -517,7 +517,6 @@ dump_if(FILE *fp, void *data)
 		conf_write(fp, "   Done VRID check");
 #endif
 	conf_write(fp, "   MTU = %d", ifp->mtu);
->>>>>>> upstream/master
 
 	//接口类型
 	switch (ifp->hw_type) {
