@@ -24,16 +24,14 @@
 
 /* system includes */
 #include <openssl/err.h>
+#include <stdbool.h>
 
 /* keepalived includes */
 #include "utils.h"
-#include "html.h"
 
 /* genhash includes */
-#include "include/main.h"
-#include "include/sock.h"
-#include "include/http.h"
 #include "include/ssl.h"
+#include "include/main.h"
 
 /* extern variables */
 extern REQ *req;
@@ -46,19 +44,26 @@ void
 init_ssl(void)
 {
 	/* Library initialization */
-#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined LIBRESSL_VERSION_NUMBER
-	SSL_library_init();
-	SSL_load_error_strings();
-#else
+#if HAVE_OPENSSL_INIT_CRYPTO
 	if (!OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, NULL))
 		fprintf(stderr, "OPENSSL_init_crypto failed\n");
+#else
+	SSL_library_init();
+	SSL_load_error_strings();
 #endif
 
-	/* Initialize SSL context for SSL v2/3 */
-	req->meth = (SSL_METHOD *) SSLv23_method();
-	req->ctx = SSL_CTX_new(req->meth);
+	/* Initialize SSL context */
+#if HAVE_TLS_METHOD
+	req->meth = TLS_method();
+#else
+	req->meth = SSLv23_method();
+#endif
+	if (!(req->ctx = SSL_CTX_new(req->meth))) {
+		fprintf(stderr, "SSL_CTX_new() failed\n");
+		exit(1);
+	}
 
-#if (OPENSSL_VERSION_NUMBER < 0x00905100L) || defined LIBRESSL_VERSION_NUMBER
+#if HAVE_SSL_CTX_SET_VERIFY_DEPTH
 	SSL_CTX_set_verify_depth(req->ctx, 1);
 #endif
 }
@@ -67,9 +72,6 @@ init_ssl(void)
 int
 ssl_printerr(int err)
 {
-	unsigned long extended_error = 0;
-	char *ssl_strerr;
-
 	switch (err) {
 	case SSL_ERROR_ZERO_RETURN:
 		fprintf(stderr, "  SSL error: (zero return)\n");
@@ -89,34 +91,43 @@ ssl_printerr(int err)
 	case SSL_ERROR_SYSCALL:
 		fprintf(stderr, "  SSL error: (syscall error)\n");
 		break;
-	case SSL_ERROR_SSL:{
-			ssl_strerr = (char *) MALLOC(500);
-
-			extended_error = ERR_get_error();
-			ERR_error_string(extended_error, ssl_strerr);
-			fprintf(stderr, "  SSL error: (%s)\n", ssl_strerr);
-			FREE(ssl_strerr);
-			break;
-		}
+	case SSL_ERROR_SSL:
+		fprintf(stderr, "  SSL error: (%s)\n", ERR_error_string(ERR_get_error(), NULL));
+		break;
 	}
 	return 0;
 }
 
-int
+bool
 ssl_connect(thread_t * thread)
 {
 	SOCK *sock_obj = THREAD_ARG(thread);
 	int ret;
 
 	sock_obj->ssl = SSL_new(req->ctx);
+	if (!sock_obj->ssl) {
+		fprintf(stderr, "SSL_new() failed\n");
+		return false;
+	}
+
 	sock_obj->bio = BIO_new_socket(sock_obj->fd, BIO_NOCLOSE);
+	if (!sock_obj->bio) {
+		fprintf(stderr, "BIO_new_socket failed\n");
+		return false;
+	}
+
 	BIO_set_nbio(sock_obj->bio, 1);	/* Set the Non-Blocking flag */
-#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined LIBRESSL_VERSION_NUMBER
-	SSL_set_bio(sock_obj->ssl, sock_obj->bio, sock_obj->bio);
-#else
+#if HAVE_SSL_SET0_RBIO
 	BIO_up_ref(sock_obj->bio);
 	SSL_set0_rbio(sock_obj->ssl, sock_obj->bio);
 	SSL_set0_wbio(sock_obj->ssl, sock_obj->bio);
+#else
+	SSL_set_bio(sock_obj->ssl, sock_obj->bio, sock_obj->bio);
+#endif
+#ifdef _HAVE_SSL_SET_TLSEXT_HOST_NAME_
+		if (req->vhost != NULL && req->sni) {
+			SSL_set_tlsext_host_name(sock_obj->ssl, req->vhost);
+		}
 #endif
 
 	ret = SSL_connect(sock_obj->ssl);
@@ -124,7 +135,7 @@ ssl_connect(thread_t * thread)
 	DBG("  SSL_connect return code = %d on fd:%d\n", ret, thread->u.fd);
 	ssl_printerr(SSL_get_error(sock_obj->ssl, ret));
 
-	return (ret > 0) ? 1 : 0;
+	return (ret > 0);
 }
 
 int

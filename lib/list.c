@@ -22,14 +22,68 @@
 
 #include "config.h"
 
+#include <stdio.h>
+
 #include "list.h"
 #include "memory.h"
 
+/* Multiple list helpers functions */
+list
+alloc_mlist_r(void (*free_func) (void *), void (*dump_func) (FILE *, void *), size_t size)
+{
+	list new = (list) MALLOC(size * sizeof (struct _list));
+	new->free = free_func;
+	new->dump = dump_func;
+	return new;
+}
+
+#ifdef _VRRP_FD_DEBUG_
+void
+dump_mlist(FILE *fp, list l, size_t size)
+{
+	element e;
+	unsigned i;
+
+	for (i = 0; i < size; i++) {
+		for (e = LIST_HEAD(&l[i]); e; ELEMENT_NEXT(e))
+			if (l->dump)
+				(*l->dump) (fp, e->data);
+	}
+}
+#endif
+
+static void
+free_melement(list l, void (*free_func) (void *))
+{
+	element e;
+	element next;
+
+	for (e = LIST_HEAD(l); e; e = next) {
+		next = e->next;
+		if (free_func)
+			(*free_func) (e->data);
+		FREE(e);
+	}
+}
+
+void
+free_mlist_r(list l, size_t size)
+{
+	size_t i;
+
+	if (!l)
+		return;
+
+	for (i = 0; i < size; i++)
+		free_melement(&l[i], l->free);
+	FREE(l);
+}
+
 /* Simple list helpers functions */
 list
-alloc_list(void (*free_func) (void *), void (*dump_func) (void *))
+alloc_list_r(void (*free_func) (void *), void (*dump_func) (FILE *fp, void *))
 {
-	return alloc_mlist(free_func, dump_func, 1);
+	return alloc_mlist_r(free_func, dump_func, 1);
 }
 
 static element
@@ -40,14 +94,11 @@ alloc_element(void)
 }
 
 //申请element并将其加入到list
-void
-list_add(list l, void *data)
+static inline void
+__list_add(list l, element e)
 {
-	element e = alloc_element();
-
 	e->prev = l->tail;
-	/* e->next = NULL;	// MALLOC sets this NULL */
-	e->data = data;
+	e->next = NULL;
 
 	if (l->head == NULL)
 		l->head = e;
@@ -59,27 +110,77 @@ list_add(list l, void *data)
 
 //找到data,并将其自list中删除
 void
-list_del(list l, void *data)
+list_add_r(list l, void *data)
+{
+	element e = alloc_element();
+
+	e->data = data;
+
+	__list_add(l, e);
+}
+
+void
+list_add_head_r(list l, void *data)
+{
+	element e = alloc_element();
+
+	e->data = data;
+
+	e->next = l->head;
+	e->prev = NULL;
+
+	if (l->tail == NULL)
+		l->tail = e;
+	else
+		l->head->prev = e;
+	l->head = e;
+	l->count++;
+}
+
+static inline void
+__list_remove(list l, element e)
+{
+	if (e->prev)
+		e->prev->next = e->next;
+	else
+		l->head = e->next;
+
+	if (e->next)
+		e->next->prev = e->prev;
+	else
+		l->tail = e->prev;
+
+	l->count--;
+}
+
+void
+list_remove_r(list l, element e)
+{
+	if (l->free)
+		(*l->free) (e->data);
+
+	__list_remove(l, e);
+	FREE(e);
+}
+
+void
+list_del_r(list l, void *data)
 {
 	element e;
 
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		if (ELEMENT_DATA(e) == data) {
-			if (e->prev)
-				e->prev->next = e->next;
-			else
-				l->head = e->next;
-
-			if (e->next)
-				e->next->prev = e->prev;
-			else
-				l->tail = e->prev;
-
-			l->count--;
-			FREE(e);
+			list_remove_r(l, e);
 			return;
 		}
 	}
+}
+
+void
+list_transfer(element e, list l_from, list l_to)
+{
+	__list_remove(l_from, e);
+	__list_add(l_to, e);
 }
 
 //返回list中第num个元素的data
@@ -104,7 +205,7 @@ list_element(list l, size_t num)
 
 //遍历list，并调用dump
 void
-dump_list(list l)
+dump_list(FILE *fp, list l)
 {
 	element e;
 
@@ -113,7 +214,7 @@ dump_list(list l)
 
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e))
 		if (l->dump)
-			(*l->dump) (e->data);
+			(*l->dump) (fp, e->data);
 }
 
 //遍历list,并针对每一个list元素，调用list上的free函数
@@ -138,7 +239,7 @@ free_elements(list l)
 
 //销毁list
 void
-free_list_elements(list l)
+free_list_elements_r(list l)
 {
 	free_elements(l);
 
@@ -148,7 +249,7 @@ free_list_elements(list l)
 
 //销毁list，并置list为空
 void
-free_list(list *lp)
+free_list_r(list *lp)
 {
 	list l = *lp;
 
@@ -164,7 +265,7 @@ free_list(list *lp)
 
 //删除l中的元素e,并释放其data占用的内存
 void
-free_list_element(list l, element e)
+free_list_element_r(list l, element e)
 {
 	if (!l || !e)
 		return;
@@ -182,57 +283,15 @@ free_list_element(list l, element e)
 	FREE(e);
 }
 
-/* Multiple list helpers functions */
-//申请list,设置list对应的回调，容许同时创建多个list
-list
-alloc_mlist(void (*free_func) (void *), void (*dump_func) (void *), size_t size)
-{
-	list new = (list) MALLOC(size * sizeof (struct _list));
-	new->free = free_func;
-	new->dump = dump_func;
-	return new;
-}
-
-#ifdef _INCLUDE_UNUSED_CODE_
 void
-dump_mlist(list l, size_t size)
+free_list_data_r(list l, void *data)
 {
 	element e;
-	int i;
 
-	for (i = 0; i < size; i++) {
-		for (e = LIST_HEAD(&l[i]); e; ELEMENT_NEXT(e))
-			if (l->dump)
-				(*l->dump) (e->data);
+	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
+		if (ELEMENT_DATA(e) == data) {
+			free_list_element_r(l, e);
+			return;
+		}
 	}
-}
-#endif
-
-//针对每个list的element，调用free_func函数
-static void
-free_melement(list l, void (*free_func) (void *))
-{
-	element e;
-	element next;
-
-	for (e = LIST_HEAD(l); e; e = next) {
-		next = e->next;
-		if (free_func)
-			(*free_func) (e->data);
-		FREE(e);
-	}
-}
-
-//一次性释放掉多个list(有size个）
-void
-free_mlist(list l, size_t size)
-{
-	size_t i;
-
-	if (!l)
-		return;
-
-	for (i = 0; i < size; i++)
-		free_melement(&l[i], l->free);
-	FREE(l);
 }

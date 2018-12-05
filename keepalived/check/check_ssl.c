@@ -25,15 +25,16 @@
 
 #include "config.h"
 
+#include <fcntl.h>
 #include <openssl/err.h>
+
 #include "check_ssl.h"
 #include "check_api.h"
+#include "check_http.h"
 #include "logger.h"
-#include "memory.h"
-#include "parser.h"
-#include "smtp.h"
-#include "utils.h"
-#include "html.h"
+#ifdef THREAD_DUMP
+#include "scheduler.h"
+#endif
 
 /* SSL primitives */
 /* Free an SSL context */
@@ -61,18 +62,18 @@ password_cb(char *buf, int num, __attribute__((unused)) int rwflag, void *userda
 }
 
 /* Inititalize global SSL context */
-static int
+static bool
 build_ssl_ctx(void)
 {
 	ssl_data_t *ssl;
 
 	/* Library initialization */
-#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined LIBRESSL_VERSION_NUMBER
-	SSL_library_init();
-	SSL_load_error_strings();
-#else
+#if HAVE_OPENSSL_INIT_CRYPTO
 	if (!OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, NULL))
 		log_message(LOG_INFO, "OPENSSL_init_crypto failed");
+#else
+	SSL_library_init();
+	SSL_load_error_strings();
 #endif
 
 	if (!check_data->ssl)
@@ -80,9 +81,16 @@ build_ssl_ctx(void)
 	else
 		ssl = check_data->ssl;
 
-	/* Initialize SSL context for SSL v2/3 */
-	ssl->meth = (SSL_METHOD *) SSLv23_method();
-	ssl->ctx = SSL_CTX_new(ssl->meth);
+	/* Initialize SSL context */
+#if HAVE_TLS_METHOD
+	ssl->meth = TLS_method();
+#else
+	ssl->meth = SSLv23_method();
+#endif
+	if (!(ssl->ctx = SSL_CTX_new(ssl->meth))) {
+		log_message(LOG_INFO, "SSL error: cannot create new SSL context");
+		return false;
+	}
 
 	/* return for autogen context */
 	if (!check_data->ssl) {
@@ -97,7 +105,7 @@ build_ssl_ctx(void)
 		     (ssl->ctx, check_data->ssl->certfile))) {
 			log_message(LOG_INFO,
 			       "SSL error : Cant load certificate file...");
-			return 0;
+			return false;
 		}
 
 	/* Handle password callback using userdata ssl */
@@ -112,7 +120,7 @@ build_ssl_ctx(void)
 		    (SSL_CTX_use_PrivateKey_file
 		     (ssl->ctx, check_data->ssl->keyfile, SSL_FILETYPE_PEM))) {
 			log_message(LOG_INFO, "SSL error : Cant load key file...");
-			return 0;
+			return false;
 		}
 
 	/* Load the CAs we trust */
@@ -121,22 +129,22 @@ build_ssl_ctx(void)
 		    (SSL_CTX_load_verify_locations
 		     (ssl->ctx, check_data->ssl->cafile, 0))) {
 			log_message(LOG_INFO, "SSL error : Cant load CA file...");
-			return 0;
+			return false;
 		}
 
       end:
-#if (OPENSSL_VERSION_NUMBER < 0x00905100L) || defined LIBRESSL_VERSION_NUMBER
+#if HAVE_SSL_CTX_SET_VERIFY_DEPTH
 	SSL_CTX_set_verify_depth(ssl->ctx, 1);
 #endif
 
-	return 1;
+	return true;
 }
 
 /*
  * Initialize the SSL context, with or without specific
  * configuration files.
  */
-int
+bool
 init_ssl_ctx(void)
 {
 	ssl_data_t *ssl = check_data->ssl;
@@ -148,9 +156,9 @@ init_ssl_ctx(void)
 		log_message(LOG_INFO, "  SSL   cafile:%s", ssl->cafile);
 		log_message(LOG_INFO, "Terminate...");
 		clear_ssl(ssl);
-		return 0;
+		return false;
 	}
-	return 1;
+	return true;
 }
 
 /* Display SSL error to readable string */
@@ -190,43 +198,60 @@ ssl_connect(thread_t * thread, int new_req)
 	checker_t *checker = THREAD_ARG(thread);
 	http_checker_t *http_get_check = CHECKER_ARG(checker);
 	request_t *req = http_get_check->req;
+#ifdef _HAVE_SSL_SET_TLSEXT_HOST_NAME_
+	url_t *url = list_element(http_get_check->url, http_get_check->url_it);
+	char* vhost = NULL;
+#endif
 	int ret = 0;
-	int val = 0;
 
 	/* First round, create SSL context */
 	if (new_req) {
 		int bio_fd;
-		req->ssl = SSL_new(check_data->ssl->ctx);
-		req->bio = BIO_new_socket(thread->u.fd, BIO_NOCLOSE);
+
+		if (!(req->ssl = SSL_new(check_data->ssl->ctx))) {
+			log_message(LOG_INFO, "Unable to establish ssl connection - SSL_new() failed");
+			return 0;
+		}
+
+		if (!(req->bio = BIO_new_socket(thread->u.fd, BIO_NOCLOSE))) {
+			log_message(LOG_INFO, "Unable to establish ssl connection - BIO_new_socket() failed");
+			return 0;
+		}
+
 		BIO_get_fd(req->bio, &bio_fd);
 		fcntl(bio_fd, F_SETFD, fcntl(bio_fd, F_GETFD) | FD_CLOEXEC);
-#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || defined LIBRESSL_VERSION_NUMBER
-		SSL_set_bio(req->ssl, req->bio, req->bio);
-#else
+#if HAVE_SSL_SET0_RBIO
 		BIO_up_ref(req->bio);
 		SSL_set0_rbio(req->ssl, req->bio);
 		SSL_set0_wbio(req->ssl, req->bio);
+#else
+		SSL_set_bio(req->ssl, req->bio, req->bio);
+#endif
+#ifdef _HAVE_SSL_SET_TLSEXT_HOST_NAME_
+		if (http_get_check->enable_sni) {
+			if (url && url->virtualhost)
+				vhost = url->virtualhost;
+			else if (http_get_check->virtualhost)
+				vhost = http_get_check->virtualhost;
+			else if (checker->vs->virtualhost)
+				vhost = checker->vs->virtualhost;
+			if (vhost)
+				SSL_set_tlsext_host_name(req->ssl, vhost);
+		}
 #endif
 	}
 
-	/* Set descriptor non blocking */
-	val = fcntl(thread->u.fd, F_GETFL, 0);
-	fcntl(thread->u.fd, F_SETFL, val | O_NONBLOCK);
-
 	ret = SSL_connect(req->ssl);
-
-	/* restore descriptor flags */
-	fcntl(thread->u.fd, F_SETFL, val);
 
 	return ret;
 }
 
-int
+bool
 ssl_send_request(SSL * ssl, char *str_request, int request_len)
 {
 	int err, r = 0;
 
-	while (1) {
+	while (true) {
 		err = 1;
 		r = SSL_write(ssl, str_request, request_len);
 		if (SSL_ERROR_NONE != SSL_get_error(ssl, r))
@@ -238,7 +263,7 @@ ssl_send_request(SSL * ssl, char *str_request, int request_len)
 		break;
 	}
 
-	return (err == 3) ? 1 : 0;
+	return (err == 3);
 }
 
 /* Asynchronous SSL stream reader */
@@ -250,23 +275,15 @@ ssl_read_thread(thread_t * thread)
 	request_t *req = http_get_check->req;
 	url_t *url = list_element(http_get_check->url, http_get_check->url_it);
 	unsigned timeout = checker->co->connection_to;
-	unsigned char digest[16];
+	unsigned char digest[MD5_DIGEST_LENGTH];
 	int r = 0;
-	int val;
 
 	/* Handle read timeout */
 	if (thread->type == THREAD_READ_TIMEOUT && !req->extracted)
 		return timeout_epilog(thread, "Timeout SSL read");
 
-	/* Set descriptor non blocking */
-	val = fcntl(thread->u.fd, F_GETFL, 0);
-	fcntl(thread->u.fd, F_SETFL, val | O_NONBLOCK);
-
 	/* read the SSL stream */
 	r = SSL_read(req->ssl, req->buffer + req->len, (int)(MAX_BUFFER_LENGTH - req->len));
-
-	/* restore descriptor flags */
-	fcntl(thread->u.fd, F_SETFL, val);
 
 	req->error = SSL_get_error(req->ssl, r);
 
@@ -276,7 +293,7 @@ ssl_read_thread(thread_t * thread)
 				thread->u.fd, timeout);
 	} else if (r > 0 && req->error == 0) {
 		/* Handle response stream */
-		http_process_response(req, (size_t)r, (url->digest != NULL));
+		http_process_response(req, (size_t)r, url);
 
 		/*
 		 * Register next ssl stream reader.
@@ -304,3 +321,11 @@ ssl_read_thread(thread_t * thread)
 
 	return 0;
 }
+
+#ifdef THREAD_DUMP
+void
+register_check_ssl_addresses(void)
+{
+	register_thread_address("ssl_read_thread", ssl_read_thread);
+}
+#endif

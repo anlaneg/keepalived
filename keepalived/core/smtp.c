@@ -24,13 +24,13 @@
 
 #include "config.h"
 
+#include <errno.h>
+#include <unistd.h>
 #include <time.h>
 
 #include "smtp.h"
-#include "global_data.h"
-#include "scheduler.h"
 #include "memory.h"
-#include "list.h"
+#include "layer4.h"
 #include "logger.h"
 #include "utils.h"
 #if !HAVE_DECL_SOCK_CLOEXEC
@@ -38,6 +38,12 @@
 #endif
 #ifdef _WITH_LVS_
 #include "check_api.h"
+#endif
+#ifdef THREAD_DUMP
+#include "scheduler.h"
+#endif
+#ifdef _SMTP_ALERT_DEBUG_
+bool do_smtp_alert_debug;
 #endif
 
 /* SMTP FSM definition */
@@ -282,6 +288,7 @@ smtp_send_thread(thread_t * thread)
 	if (smtp->stage != ERROR) {
 		thread_add_read(thread->master, smtp_read_thread, smtp,
 				thread->u.fd, global_data->smtp_connection_to);
+		thread_del_write(thread);
 	} else {
 		log_message(LOG_INFO, "Can not send data to remote SMTP server %s."
 				    , FMT_SMTP_HOST());
@@ -448,56 +455,6 @@ data_code(thread_t * thread, int status)
 	return 0;
 }
 
-/*
- * Build a comma separated string of smtp recipient email addresses
- * for the email message To-header.
- */
-static void
-build_to_header_rcpt_addrs(smtp_t *smtp)
-{
-	char *fetched_email;
-	char *email_to_addrs;
-	size_t bytes_available = SMTP_BUFFER_MAX - 1;
-	size_t bytes_to_write;
-
-	if (smtp == NULL)
-		return;
-
-	email_to_addrs = smtp->email_to;
-	smtp->email_it = 0;
-
-	while (1) {
-		fetched_email = fetch_next_email(smtp);
-		if (fetched_email == NULL)
-			break;
-
-		bytes_to_write = strlen(fetched_email);
-		if (!smtp->email_it) {
-			if (bytes_available < bytes_to_write)
-				break;
-		} else {
-			if (bytes_available < 2 + bytes_to_write)
-				break;
-
-			/* Prepend with a comma and space to all non-first email addresses */
-			*email_to_addrs++ = ',';
-			*email_to_addrs++ = ' ';
-			bytes_available -= 2;
-		}
-
-		if (snprintf(email_to_addrs, bytes_to_write + 1, "%s", fetched_email) != (int)bytes_to_write) {
-			/* Inconsistent state, no choice but to break here and do nothing */
-			break;
-		}
-
-		email_to_addrs += bytes_to_write;
-		bytes_available -= bytes_to_write;
-		smtp->email_it++;
-	}
-
-	smtp->email_it = 0;
-}
-
 /* BODY command processing.
  * Do we need to use mutli-thread for multi-part body
  * handling ? Don t really think :)
@@ -508,13 +465,13 @@ body_cmd(thread_t * thread)
 	smtp_t *smtp = THREAD_ARG(thread);
 	char *buffer;
 	char rfc822[80];
-	time_t tm;
+	time_t now;
 	struct tm *t;
 
 	buffer = (char *) MALLOC(SMTP_BUFFER_MAX);
 
-	time(&tm);
-	t = localtime(&tm);
+	time(&now);
+	t = localtime(&now);
 	strftime(rfc822, sizeof(rfc822), "%a, %d %b %Y %H:%M:%S %z", t);
 
 	snprintf(buffer, SMTP_BUFFER_MAX, SMTP_HEADERS_CMD,
@@ -577,7 +534,7 @@ quit_code(thread_t * thread, __attribute__((unused)) int status)
 
 	/* final state, we are disconnected from the remote host */
 	free_smtp_all(smtp);
-	close(thread->u.fd);
+	thread_close_fd(thread);
 	return 0;
 }
 
@@ -587,11 +544,16 @@ smtp_connect(smtp_t * smtp)
 {
 	enum connect_result status;
 
-	if ((smtp->fd = socket(global_data->smtp_server.ss_family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP)) == -1) {
+	if ((smtp->fd = socket(global_data->smtp_server.ss_family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP)) == -1) {
 		DBG("SMTP connect fail to create socket.");
 		free_smtp_all(smtp);
 		return;
 	}
+
+#if !HAVE_DECL_SOCK_NONBLOCK
+	if (set_sock_flags(smtp->fd, F_SETFL, O_NONBLOCK))
+		log_message(LOG_INFO, "Unable to set NONBLOCK on smtp_connect socket - %s (%d)", strerror(errno), errno);
+#endif
 
 #if !HAVE_DECL_SOCK_CLOEXEC
 	if (set_sock_flags(smtp->fd, F_SETFD, FD_CLOEXEC))
@@ -604,89 +566,187 @@ smtp_connect(smtp_t * smtp)
 	thread_add_event(master, SMTP_FSM[status].send, smtp, smtp->fd);
 }
 
+#ifdef _SMTP_ALERT_DEBUG_
+static void
+smtp_log_to_file(smtp_t *smtp)
+{
+	FILE *fp = fopen_safe("/tmp/smtp-alert.log", "a");
+	time_t now;
+	struct tm tm;
+	char time_buf[25];
+	int time_buf_len;
+
+	time(&now);
+	localtime_r(&now, &tm);
+	time_buf_len = strftime(time_buf, sizeof time_buf, "%a %b %e %X %Y", &tm);
+
+	fprintf(fp, "%s: %s -> %s\n"
+		    "%*sSubject: %s\n"
+		    "%*sBody:    %s\n\n",
+		    time_buf, global_data->email_from, smtp->email_to,
+		    time_buf_len - 7, "", smtp->subject,
+		    time_buf_len - 7, "", smtp->body);
+
+	fclose(fp);
+
+	free_smtp_all(smtp);
+}
+#endif
+
+/*
+ * Build a comma separated string of smtp recipient email addresses
+ * for the email message To-header.
+ */
+static void
+build_to_header_rcpt_addrs(smtp_t *smtp)
+{
+	char *fetched_email;
+	char *email_to_addrs;
+	size_t bytes_available = SMTP_BUFFER_MAX - 1;
+	size_t bytes_to_write;
+
+	if (smtp == NULL)
+		return;
+
+	email_to_addrs = smtp->email_to;
+	smtp->email_it = 0;
+
+	while (1) {
+		fetched_email = fetch_next_email(smtp);
+		if (fetched_email == NULL)
+			break;
+
+		bytes_to_write = strlen(fetched_email);
+		if (!smtp->email_it) {
+			if (bytes_available < bytes_to_write)
+				break;
+		} else {
+			if (bytes_available < 2 + bytes_to_write)
+				break;
+
+			/* Prepend with a comma and space to all non-first email addresses */
+			*email_to_addrs++ = ',';
+			*email_to_addrs++ = ' ';
+			bytes_available -= 2;
+		}
+
+		if (snprintf(email_to_addrs, bytes_to_write + 1, "%s", fetched_email) != (int)bytes_to_write) {
+			/* Inconsistent state, no choice but to break here and do nothing */
+			break;
+		}
+
+		email_to_addrs += bytes_to_write;
+		bytes_available -= bytes_to_write;
+		smtp->email_it++;
+	}
+
+	smtp->email_it = 0;
+}
+
 /* Main entry point */
 void
-smtp_alert(
-#ifndef _WITH_LVS_
-	   __attribute__((unused)) void *dummy1,
-#else
-	   checker_t* checker,
-#endif
-#ifndef _WITH_VRRP_
-	   __attribute__((unused)) void *dummy2, __attribute__((unused)) void *dummy3,
-#else
-	   vrrp_t * vrrp, vrrp_sgroup_t * vgroup,
-#endif
-	   const char *subject, const char *body)
+smtp_alert(smtp_msg_t msg_type, void* data, const char *subject, const char *body)
 {
 	smtp_t *smtp;
+#ifdef _WITH_VRRP_
+	vrrp_t *vrrp;
+	vrrp_sgroup_t *vgroup;
+#endif
+#ifdef _WITH_LVS_
+	checker_t *checker;
+	virtual_server_t *vs;
+	smtp_rs *rs_info;
+#endif
 
 	/* Only send mail if email specified */
-	if (!LIST_ISEMPTY(global_data->email) && global_data->smtp_server.ss_family != 0) {
-		/* allocate & initialize smtp argument data structure */
-		smtp = (smtp_t *) MALLOC(sizeof(smtp_t));
-		smtp->subject = (char *) MALLOC(MAX_HEADERS_LENGTH);
-		smtp->body = (char *) MALLOC(MAX_BODY_LENGTH);
-		smtp->buffer = (char *) MALLOC(SMTP_BUFFER_MAX);
-		smtp->email_to = (char *) MALLOC(SMTP_BUFFER_MAX);
+	if (LIST_ISEMPTY(global_data->email) || !global_data->smtp_server.ss_family)
+		return;
 
-		/* format subject if rserver is specified */
+	/* allocate & initialize smtp argument data structure */
+	smtp = (smtp_t *) MALLOC(sizeof(smtp_t));
+	smtp->subject = (char *) MALLOC(MAX_HEADERS_LENGTH);
+	smtp->body = (char *) MALLOC(MAX_BODY_LENGTH);
+	smtp->buffer = (char *) MALLOC(SMTP_BUFFER_MAX);
+	smtp->email_to = (char *) MALLOC(SMTP_BUFFER_MAX);
+
+	/* format subject if rserver is specified */
 #ifdef _WITH_LVS_
-		if (checker) {
-			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] Realserver %s - %s",
-						global_data->router_id,
-						FMT_RS(checker->rs, checker->vs),
-						subject);
-		}
-		else
+	if (msg_type == SMTP_MSG_RS) {
+		checker = (checker_t *)data;
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] Realserver %s of virtual server %s - %s",
+					global_data->router_id,
+					FMT_RS(checker->rs, checker->vs),
+					FMT_VS(checker->vs),
+					checker->rs->alive ? "UP" : "DOWN");
+	}
+	else if (msg_type == SMTP_MSG_VS) {
+		vs = (virtual_server_t *)data;
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] Virtualserver %s - %s",
+					global_data->router_id,
+					FMT_VS(vs),
+					subject);
+	}
+	else if (msg_type == SMTP_MSG_RS_SHUT) {
+		rs_info = (smtp_rs *)data;
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] Realserver %s of virtual server %s - %s",
+					global_data->router_id,
+					FMT_RS(rs_info->rs, rs_info->vs),
+					FMT_VS(rs_info->vs),
+					subject);
+	}
+	else
 #endif
 #ifdef _WITH_VRRP_
-		if (vrrp)
-			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] VRRP Instance %s - %s"
-					      , global_data->router_id
-					      , vrrp->iname
-					      , subject);
-		else if (vgroup)
-			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] VRRP Group %s - %s"
-					      , global_data->router_id
-					      , vgroup->gname
-					      , subject);
-		else
+	if (msg_type == SMTP_MSG_VRRP) {
+		vrrp = (vrrp_t *)data;
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] VRRP Instance %s - %s",
+					global_data->router_id,
+					vrrp->iname,
+					subject);
+	} else if (msg_type == SMTP_MSG_VGROUP) {
+		vgroup = (vrrp_sgroup_t *)data;
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] VRRP Group %s - %s",
+					global_data->router_id,
+					vgroup->gname,
+					subject);
+	}
+	else
 #endif
-		if (global_data->router_id)
-			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] %s"
-					      , global_data->router_id
-					      , subject);
-		else
-			snprintf(smtp->subject, MAX_HEADERS_LENGTH, "%s", subject);
+	if (global_data->router_id)
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "[%s] %s"
+				      , global_data->router_id
+				      , subject);
+	else
+		snprintf(smtp->subject, MAX_HEADERS_LENGTH, "%s", subject);
 
-		strncpy(smtp->body, body, MAX_BODY_LENGTH - 1);
-		smtp->body[MAX_BODY_LENGTH - 1]= '\0';
+	strncpy(smtp->body, body, MAX_BODY_LENGTH - 1);
+	smtp->body[MAX_BODY_LENGTH - 1]= '\0';
 
-		build_to_header_rcpt_addrs(smtp);
+	build_to_header_rcpt_addrs(smtp);
 
 #ifdef _SMTP_ALERT_DEBUG_
-		FILE *fp = fopen("/tmp/smtp-alert.log", "a");
-		struct tm tm;
-		char time_buf[25];
-		int time_buf_len;
-
-		localtime_r(&time_now.tv_sec, &tm);
-		time_buf_len = strftime(time_buf, sizeof time_buf, "%a %b %e %X %Y", &tm);
-
-		fprintf(fp, "%s: %s -> %s\n"
-			    "%*sSubject: %s\n"
-			    "%*sBody:    %s\n\n",
-			    time_buf, global_data->email_from, smtp->email_to,
-			    time_buf_len - 7, "", smtp->subject,
-			    time_buf_len - 7, "", smtp->body);
-
-		fclose(fp);
-
-		free_smtp_all(smtp);
-		return;
+	if (do_smtp_alert_debug)
+		smtp_log_to_file(smtp);
+	else
 #endif
-
-		smtp_connect(smtp);
-	}
+	smtp_connect(smtp);
 }
+
+#ifdef THREAD_DUMP
+void
+register_smtp_addresses(void)
+{
+	register_thread_address("body_cmd", body_cmd);
+	register_thread_address("connection_error", connection_error);
+	register_thread_address("connection_in_progress", connection_in_progress);
+	register_thread_address("connection_success", connection_success);
+	register_thread_address("connection_timeout", connection_timeout);
+	register_thread_address("data_cmd", data_cmd);
+	register_thread_address("helo_cmd", helo_cmd);
+	register_thread_address("mail_cmd", mail_cmd);
+	register_thread_address("quit_cmd", quit_cmd);
+	register_thread_address("rcpt_cmd", rcpt_cmd);
+	register_thread_address("smtp_read_thread", smtp_read_thread);
+	register_thread_address("smtp_send_thread", smtp_send_thread);
+}
+#endif

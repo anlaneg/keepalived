@@ -29,12 +29,15 @@
 #include <stdio.h>
 #include <json.h>
 
+#include "vrrp.h"
+#include "vrrp_track.h"
 #include "list.h"
 #include "vrrp_data.h"
 #include "vrrp_iproute.h"
 #include "vrrp_iprule.h"
 #include "logger.h"
 #include "timer.h"
+#include "utils.h"
 
 static inline double
 timeval_to_double(const timeval_t *t)
@@ -53,7 +56,7 @@ vrrp_print_json(void)
 	if (LIST_ISEMPTY(vrrp_data->vrrp))
 		return;
 
-	file = fopen ("/tmp/keepalived.json","w");
+	file = fopen_safe("/tmp/keepalived.json", "w");
 	if (!file) {
 		log_message(LOG_INFO, "Can't open /tmp/keepalived.json (%d: %s)",
 			errno, strerror(errno));
@@ -112,7 +115,7 @@ vrrp_print_json(void)
 				tracked_sc_t *tsc = ELEMENT_DATA(f);
 				vrrp_script_t *vscript = tsc->scr;
 				json_object_array_add(track_script,
-					json_object_new_string(vscript->script));
+					json_object_new_string(cmd_str(&vscript->script)));
 			}
 		}
 		json_object_object_add(json_data, "track_script", track_script);
@@ -207,8 +210,10 @@ vrrp_print_json(void)
 			json_object_new_double(vrrp->adver_int / TIMER_HZ_FLOAT));
 		json_object_object_add(json_data, "master_adver_int",
 			json_object_new_double(vrrp->master_adver_int / TIMER_HZ_FLOAT));
+#ifdef _WITH_FIREWALL_
 		json_object_object_add(json_data, "accept",
 			json_object_new_int((int)vrrp->accept));
+#endif
 		json_object_object_add(json_data, "nopreempt",
 			json_object_new_boolean(vrrp->nopreempt));
 		json_object_object_add(json_data, "preempt_delay",
@@ -219,21 +224,24 @@ vrrp_print_json(void)
 			json_object_new_int(vrrp->wantstate));
 		json_object_object_add(json_data, "version",
 			json_object_new_int(vrrp->version));
-		if (vrrp->script_backup) 
-		json_object_object_add(json_data, "script_backup",
-			json_object_new_string(vrrp->script_backup->name));
+		if (vrrp->script_backup)
+			json_object_object_add(json_data, "script_backup",
+				json_object_new_string(cmd_str(vrrp->script_backup)));
 		if (vrrp->script_master)
-		json_object_object_add(json_data, "script_master",
-			json_object_new_string(vrrp->script_master->name));
+			json_object_object_add(json_data, "script_master",
+				json_object_new_string(cmd_str(vrrp->script_master)));
 		if (vrrp->script_fault)
-		json_object_object_add(json_data, "script_fault",
-			json_object_new_string(vrrp->script_fault->name));
+			json_object_object_add(json_data, "script_fault",
+				json_object_new_string(cmd_str(vrrp->script_fault)));
 		if (vrrp->script_stop)
-		json_object_object_add(json_data, "script_stop",
-			json_object_new_string(vrrp->script_stop->name));
+			json_object_object_add(json_data, "script_stop",
+				json_object_new_string(cmd_str(vrrp->script_stop)));
 		if (vrrp->script)
-		json_object_object_add(json_data, "script",
-			json_object_new_string(vrrp->script->name));
+			json_object_object_add(json_data, "script",
+				json_object_new_string(cmd_str(vrrp->script)));
+		if (vrrp->script_master_rx_lower_pri)
+			json_object_object_add(json_data, "script_master_rx_lower_pri",
+				json_object_new_string(cmd_str(vrrp->script_master_rx_lower_pri)));
 		json_object_object_add(json_data, "smtp_alert",
 			json_object_new_boolean(vrrp->smtp_alert));
 #ifdef _WITH_VRRP_AUTH_
@@ -241,7 +249,7 @@ vrrp_print_json(void)
 			json_object_object_add(json_data, "auth_type",
 				json_object_new_int(vrrp->auth_type));
 
-		 	if (vrrp->auth_type != VRRP_AUTH_AH) {
+			if (vrrp->auth_type != VRRP_AUTH_AH) {
 				char auth_data[sizeof(vrrp->auth_data) + 1];
 				memcpy(auth_data, vrrp->auth_data, sizeof(vrrp->auth_data));
 				auth_data[sizeof(vrrp->auth_data)] = '\0';
@@ -252,7 +260,6 @@ vrrp_print_json(void)
 		else
 			json_object_object_add(json_data, "auth_type",
 				json_object_new_int(0));
-			
 #endif
 
 		// Dump stats to json

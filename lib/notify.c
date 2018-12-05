@@ -24,111 +24,63 @@
 
 #include <unistd.h>
 #include <stdlib.h>
-#include <syslog.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
 #include <grp.h>
-#include <sys/types.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <pwd.h>
+#include <sys/resource.h>
 #include <limits.h>
-#include <stdlib.h>
+#include <sys/prctl.h>
 
 #include "notify.h"
 #include "signals.h"
 #include "logger.h"
 #include "utils.h"
-#include "vector.h"
+#include "process.h"
 #include "parser.h"
+#include "keepalived_magic.h"
+#include "scheduler.h"
 
-
-uid_t default_script_uid;				/* Default user/group for script execution */
+/* Default user/group for script execution */
+uid_t default_script_uid;
 gid_t default_script_gid;
+
+/* Have we got a default user OK? */
 static bool default_script_uid_set = false;
 static bool default_user_fail = false;			/* Set if failed to set default user,
 							   unless it defaults to root */
+
+/* Script security enabled */
+bool script_security = false;
+
+/* Buffer length needed for getpwnam_r/getgrname_r */
+static size_t getpwnam_buf_len;
+
 static char *path;
 static bool path_is_malloced;
-static size_t getpwnam_buf_len;				/* Buffer length needed for getpwnam_r/getgrname_r */
 
-static void
-fifo_open(notify_fifo_t* fifo, int (*script_exit)(thread_t *), const char *type)
-{
-	int ret;
-	int sav_errno;
+/* The priority this process is running at */
+static int cur_prio = INT_MAX;
 
-	if (fifo->name) {
-		sav_errno = 0;
+/* Buffer for expanding notify script commands */
+static char cmd_str_buf[MAXBUF];
 
-		if (!(ret = mkfifo(fifo->name, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)))
-			fifo->created_fifo = true;
-		else {
-			sav_errno = errno;
-
-			if (sav_errno != EEXIST)
-				log_message(LOG_INFO, "Unable to create %snotify fifo %s", type, fifo->name);
-		}
-
-		if (!sav_errno || sav_errno == EEXIST) {
-			/* Run the notify script if there is one */
-			if (fifo->script)
-				notify_fifo_exec(master, script_exit, NULL, fifo->script, fifo->name);
-
-			/* Now open the fifo */
-			if ((fifo->fd = open(fifo->name, O_RDWR | O_CLOEXEC | O_NONBLOCK)) == -1) {
-				log_message(LOG_INFO, "Unable to open %snotify fifo %s - errno %d", type, fifo->name, errno);
-				if (fifo->created_fifo) {
-					unlink(fifo->name);
-					fifo->created_fifo = false;
-				}
-			}
-		}
-
-		if (fifo->fd == -1) {
-			FREE(fifo->name);
-			fifo->name = NULL;
-		}
-	}
-}
-
-void
-notify_fifo_open(notify_fifo_t* global_fifo, notify_fifo_t* fifo, int (*script_exit)(thread_t *), const char *type)
-{
-	/* Open the global FIFO if specified */
-	if (global_fifo->name)
-		fifo_open(global_fifo, script_exit, "");
-
-	/* Now the specific FIFO */
-	fifo_open(fifo, script_exit, type);
-}
-
-static void
-fifo_close(notify_fifo_t* fifo)
-{
-	if (fifo->fd != -1) {
-		close(fifo->fd);
-		fifo->fd = -1;
-	}
-	if (fifo->created_fifo)
-		unlink(fifo->name);
-}
-
-void
-notify_fifo_close(notify_fifo_t* global_fifo, notify_fifo_t* fifo)
-{
-	if (global_fifo->fd != -1)
-		fifo_close(global_fifo);
-
-	fifo_close(fifo);
-}
-
-/* perform a system call */
 static bool
 set_privileges(uid_t uid, gid_t gid)
 {
 	int retval;
+
+	/* Ensure we receive SIGTERM if our parent process dies */
+	prctl(PR_SET_PDEATHSIG, SIGTERM);
+
+	/* If we have increased our priority, set it to default for the script */
+	if (cur_prio != INT_MAX)
+		cur_prio = getpriority(PRIO_PROCESS, 0);
+	if (cur_prio < 0)
+		setpriority(PRIO_PROCESS, 0, 0);
 
 	/* Drop our privileges if configured */
 	if (gid) {
@@ -154,59 +106,64 @@ set_privileges(uid_t uid, gid_t gid)
 		}
 	}
 
+	/* Prepare for invoking process/script */
+	signal_handler_script();
+	set_std_fd(false);
+
 	return false;
 }
 
-/* perform a system call */
-//采用uid,gid执行命令行cmdline
-static int
-system_call(const char *cmdline, uid_t uid, gid_t gid)
+char *
+cmd_str_r(const notify_script_t *script, char *buf, size_t len)
 {
-	int retval;
+	char *str_p;
+	int i;
+	size_t str_len;
 
-	//设置脚本执行的用户及其所属的组
-	if (set_privileges(uid, gid))
-		return -1;
+	str_p = buf;
 
-	/* system() fails if SIGCHLD is set to SIG_IGN */
-	signal_set(SIGCHLD, (void*)SIG_DFL, NULL);
+	for (i = 0; i < script->num_args; i++) {
+		/* Check there is enough room for the next word */
+		str_len = strlen(script->args[i]);
+		if (str_p + str_len + 2 + (i ? 1 : 0) >= buf + len)
+			return NULL;
 
-	retval = system(cmdline);//执行脚本
-	if (retval == -1) {
-		/* other error */
-		log_message(LOG_ALERT, "Error exec-ing command: %s", cmdline);
-	} else if (WIFEXITED(retval)) {
-		if (retval == 127) {
-			/* couldn't exec /bin/sh or couldn't find command */
-			log_message(LOG_ALERT, "Couldn't find command: %s", cmdline);
-		} else if (retval == 126) {
-			/* don't have sufficient privilege to exec command */
-			log_message(LOG_ALERT, "Insufficient privilege to exec command: %s", cmdline);
-		}
+		if (i)
+			*str_p++ = ' ';
+		*str_p++ = '\'';
+		strcpy(str_p, script->args[i]);
+		str_p += str_len;
+		*str_p++ = '\'';
 	}
+	*str_p = '\0';
 
-	return retval;
+	return buf;
 }
 
-//设置信号处理函数为默认函数，重定向stdout,stdin,stderr
-static void
-script_setup(void)
+char *
+cmd_str(const notify_script_t *script)
 {
-	signal_handler_script();
+	size_t len;
+	int i;
 
-	set_std_fd(false);
+	for (i = 0, len = 0; i < script->num_args; i++)
+		len += strlen(script->args[i]) + 3; /* Add two ', and trailing space (or null for last arg) */
+
+	if (len > sizeof cmd_str_buf)
+		return NULL;
+
+	return cmd_str_r(script, cmd_str_buf, sizeof cmd_str_buf);
 }
 
 /* Execute external script/program to process FIFO */
-pid_t
-notify_fifo_exec(thread_master_t *m, int (*func) (thread_t *), void *arg, const notify_script_t *script, const char *fifo_name)
+static pid_t
+notify_fifo_exec(thread_master_t *m, int (*func) (thread_t *), void *arg, notify_script_t *script)
 {
 	pid_t pid;
+	int retval;
+	char *scr;
 
-	if (log_file_name)
-		flush_log_file();
-
-	pid = fork();
+	pid = local_fork();
 
 	/* In case of fork is error. */
 	if (pid < 0) {
@@ -226,122 +183,288 @@ notify_fifo_exec(thread_master_t *m, int (*func) (thread_t *), void *arg, const 
 
 	setpgid(0, 0);
 	set_privileges(script->uid, script->gid);
-	script_setup();
 
-	execl(script->name, script->name, fifo_name, NULL);
+	if (script->flags | SC_EXECABLE) {
+		/* If keepalived dies, we want the script to die */
+		prctl(PR_SET_PDEATHSIG, SIGTERM);
 
-	if (errno == EACCES)
-		log_message(LOG_INFO, "FIFO notify script %s is not executable", script->name);
-	else
-		log_message(LOG_INFO, "Unable to execute FIFO notify script %s - errno %d", script->name, errno);
+		execve(script->args[0], script->args, environ);
+
+		if (errno == EACCES)
+			log_message(LOG_INFO, "FIFO notify script %s is not executable", script->args[0]);
+		else
+			log_message(LOG_INFO, "Unable to execute FIFO notify script %s - errno %d - %m", script->args[0], errno);
+	}
+	else {
+		retval = system(scr = cmd_str(script));
+
+		if (retval == 127) {
+			/* couldn't exec command */
+			log_message(LOG_ALERT, "Couldn't exec FIFO command: %s", scr);
+		}
+		else if (retval == -1)
+			log_message(LOG_ALERT, "Error exec-ing FIFO command: %s", scr);
+
+		exit(0);
+	}
 
 	/* unreached unless error */
 	exit(0);
 }
 
+static void
+fifo_open(notify_fifo_t* fifo, int (*script_exit)(thread_t *), const char *type)
+{
+	int ret;
+	int sav_errno;
+
+	if (fifo->name) {
+		sav_errno = 0;
+
+		if (!(ret = mkfifo(fifo->name, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)))
+			fifo->created_fifo = true;
+		else {
+			sav_errno = errno;
+
+			if (sav_errno != EEXIST)
+				log_message(LOG_INFO, "Unable to create %snotify fifo %s", type, fifo->name);
+		}
+
+		if (!sav_errno || sav_errno == EEXIST) {
+			/* Run the notify script if there is one */
+			if (fifo->script)
+				notify_fifo_exec(master, script_exit, fifo, fifo->script);
+
+			/* Now open the fifo */
+			if ((fifo->fd = open(fifo->name, O_RDWR | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)) == -1) {
+				log_message(LOG_INFO, "Unable to open %snotify fifo %s - errno %d", type, fifo->name, errno);
+				if (fifo->created_fifo) {
+					unlink(fifo->name);
+					fifo->created_fifo = false;
+				}
+			}
+		}
+
+		if (fifo->fd == -1) {
+			FREE(fifo->name);
+			fifo->name = NULL;
+		}
+	}
+}
+
+void
+notify_fifo_open(notify_fifo_t* global_fifo, notify_fifo_t* fifo, int (*script_exit)(thread_t *), const char *type)
+{
+	/* Open the global FIFO if specified */
+	if (global_fifo->name)
+		fifo_open(global_fifo, script_exit, "");
+
+	/* Now the specific FIFO */
+	if (fifo->name)
+		fifo_open(fifo, script_exit, type);
+}
+
+static void
+fifo_close(notify_fifo_t* fifo)
+{
+	if (fifo->fd != -1) {
+		close(fifo->fd);
+		fifo->fd = -1;
+	}
+	if (fifo->created_fifo)
+		unlink(fifo->name);
+}
+
+void
+notify_fifo_close(notify_fifo_t* global_fifo, notify_fifo_t* fifo)
+{
+	if (global_fifo->fd != -1)
+		fifo_close(global_fifo);
+
+	fifo_close(fifo);
+}
+
+/* perform a system call */
+static void system_call(const notify_script_t *) __attribute__ ((noreturn));
+
+//设置信号处理函数为默认函数，重定向stdout,stdin,stderr
+static void
+system_call(const notify_script_t* script)
+{
+	char *command_line = NULL;
+	char *str;
+	int retval;
+
+	if (set_privileges(script->uid, script->gid))
+		exit(0);
+
+	/* Move us into our own process group, so if the script needs to be killed
+	 * all its child processes will also be killed. */
+	setpgid(0, 0);
+
+	if (script->flags & SC_EXECABLE) {
+		/* If keepalived dies, we want the script to die */
+		prctl(PR_SET_PDEATHSIG, SIGTERM);
+
+		execve(script->args[0], script->args, environ);
+
+		/* error */
+		log_message(LOG_ALERT, "Error exec-ing command '%s', error %d: %m", script->args[0], errno);
+	}
+	else {
+		retval = system(str = cmd_str(script));
+
+		if (retval == -1)
+			log_message(LOG_ALERT, "Error exec-ing command: %s", str);
+		else if (WIFEXITED(retval)) {
+			if (WEXITSTATUS(retval) == 127) {
+				/* couldn't find command */
+				log_message(LOG_ALERT, "Couldn't find command: %s", str);
+			}
+			else if (WEXITSTATUS(retval) == 126) {
+				/* couldn't find command */
+				log_message(LOG_ALERT, "Couldn't execute command: %s", str);
+			}
+		}
+
+		if (command_line)
+			FREE(command_line);
+
+		if (retval == -1 ||
+		    (WIFEXITED(retval) && (WEXITSTATUS(retval) == 126 || WEXITSTATUS(retval) == 127)))
+			exit(0);
+		if (WIFEXITED(retval))
+			exit(WEXITSTATUS(retval));
+		if (WIFSIGNALED(retval))
+			kill(getpid(), WTERMSIG(retval));
+		exit(0);
+	}
+
+	exit(0);
+}
+
+/* Execute external script/program */
 int
 notify_exec(const notify_script_t *script)
 {
 	pid_t pid;
 
+#ifdef ENABLE_LOG_TO_FILE
 	if (log_file_name)
 		flush_log_file();
+#endif
 
-	pid = fork();//创建进程
+	pid = local_fork();
 
-	/* In case of fork is error. */
 	if (pid < 0) {
+		/* fork error */
 		log_message(LOG_INFO, "Failed fork process");
 		return -1;
 	}
 
-	/* In case of this is parent process */
-	if (pid)
+	if (pid) {
+		/* parent process */
 		return 0;
+	}
 
 #ifdef _MEM_CHECK_
 	skip_mem_dump();
 #endif
 
-	script_setup();
+	system_call(script);
 
-	system_call(script->name, script->uid, script->gid);
-
+	/* We should never get here */
 	exit(0);//使进程退出
 }
 
 int
-system_call_script(thread_master_t *m, int (*func) (thread_t *), void * arg, unsigned long timer, const char* script, uid_t uid, gid_t gid)
+system_call_script(thread_master_t *m, int (*func) (thread_t *), void * arg, unsigned long timer, notify_script_t* script)
 {
-	int status;
 	pid_t pid;
 
 	/* Daemonization to not degrade our scheduling timer */
+#ifdef ENABLE_LOG_TO_FILE
 	if (log_file_name)
 		flush_log_file();
+#endif
 
-	pid = fork();
+	pid = local_fork();
 
-	/* In case of fork is error. */
 	if (pid < 0) {
+		/* fork error */
 		log_message(LOG_INFO, "Failed fork process");
 		return -1;
 	}
 
-	/* In case of this is parent process */
 	if (pid) {
+		/* parent process */
 		thread_add_child(m, func, arg, pid, timer);
 		return 0;
 	}
 
-	/* Child part */
+	/* Child process */
 #ifdef _MEM_CHECK_
 	skip_mem_dump();
 #endif
 
-	setpgid(0, 0);
+	system_call(script);
 
-	script_setup();
+	exit(0); /* Script errors aren't server errors */
+}
 
-	status = system_call(script, uid, gid);
+int
+child_killed_thread(thread_t *thread)
+{
+	thread_master_t *m = thread->master;
 
-	if (WIFSIGNALED(status))
-		kill(getpid(), WTERMSIG(status));
+	/* If the child didn't die, then force it */
+	if (thread->type == THREAD_CHILD_TIMEOUT)
+		kill(-getpgid(thread->u.c.pid), SIGKILL);
 
-	if (status < 0 || !WIFEXITED(status) || WEXITSTATUS(status) >= 126)
-		exit(0); /* Script errors aren't server errors */
+	/* If all children have died, we can now complete the
+	 * termination process */
+	if (!&m->child.rb_root.rb_node && !m->shutdown_timer_running)
+		thread_add_terminate_event(m);
 
-	exit(WEXITSTATUS(status));
+	return 0;
 }
 
 void
-script_killall(thread_master_t *m, int signo)
+script_killall(thread_master_t *m, int signo, bool requeue)
 {
-	sigset_t old_set, child_wait;
 	thread_t *thread;
 	pid_t p_pgid, c_pgid;
+#ifndef HAVE_SIGNALFD
+	sigset_t old_set, child_wait;
 
-	sigprocmask(0, NULL, &old_set);
+	sigmask_func(0, NULL, &old_set);
 	if (!sigismember(&old_set, SIGCHLD)) {
 		sigemptyset(&child_wait);
 		sigaddset(&child_wait, SIGCHLD);
-		sigprocmask(SIG_BLOCK, &child_wait, NULL);
+		sigmask_func(SIG_BLOCK, &child_wait, NULL);
 	}
-
-	thread = m->child.head;
+#endif
 
 	p_pgid = getpgid(0);
 
-	while (thread) {
+	rb_for_each_entry_cached(thread, &m->child, n) {
 		c_pgid = getpgid(thread->u.c.pid);
-		if (c_pgid != p_pgid) {
+		if (c_pgid != p_pgid)
 			kill(-c_pgid, signo);
+		else {
+			log_message(LOG_INFO, "Child process %d in our process group %d", c_pgid, p_pgid);
+			kill(thread->u.c.pid, signo);
 		}
-		thread = thread->next;
 	}
 
+	/* We want to timeout the killed children in 1 second */
+	if (requeue && signo != SIGKILL)
+		thread_children_reschedule(m, child_killed_thread, TIMER_HZ);
+
+#ifndef HAVE_SIGNALFD
 	if (!sigismember(&old_set, SIGCHLD))
-		sigprocmask(SIG_UNBLOCK, &child_wait, NULL);
+		sigmask_func(SIG_UNBLOCK, &child_wait, NULL);
+#endif
 }
 
 static bool
@@ -349,25 +472,59 @@ is_executable(struct stat *buf, uid_t uid, gid_t gid)
 {
 	return (uid == 0 && buf->st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) ||
 	       (uid == buf->st_uid && buf->st_mode & S_IXUSR) ||
-	       (uid != buf->st_uid && 
+	       (uid != buf->st_uid &&
 		((gid == buf->st_gid && buf->st_mode & S_IXGRP) ||
 		 (gid != buf->st_gid && buf->st_mode & S_IXOTH)));
 }
 
+static void
+replace_cmd_name(notify_script_t *script, char *new_path)
+{
+	size_t len;
+	char **wp = &script->args[1];
+	size_t num_words = 1;
+	char **params;
+	char **word_ptrs;
+	char *words;
+
+	len = strlen(new_path) + 1;
+	while (*wp)
+		len += strlen(*wp++) + 1;
+	num_words = ((char **)script->args[0] - &script->args[0]) - 1;
+
+	params = word_ptrs = MALLOC((num_words + 1) * sizeof(char *) + len);
+	words = (char *)&params[num_words + 1];
+
+	strcpy(words, new_path);
+	*(word_ptrs++) = words;
+	words += strlen(words) + 1;
+
+	wp = &script->args[1];
+	while (*wp) {
+		strcpy(words, *wp);
+		*(word_ptrs++) = words;
+		words += strlen(*wp) + 1;
+		wp++;
+	}
+	*word_ptrs = NULL;
+
+	FREE(script->args);
+	script->args = params;
+}
+
 /* The following function is essentially __execve() from glibc */
 static int
-find_path(notify_script_t *script, bool full_string)
+find_path(notify_script_t *script)
 {
 	size_t filename_len;
 	size_t file_len;
 	size_t path_len;
-	char *file = script->name;
+	char *file = script->args[0];
 	struct stat buf;
 	int ret;
 	int ret_val = ENOENT;
 	int sgid_num;
 	gid_t *sgid_list = NULL;
-	char *space = NULL;
 	const char *subp;
 	bool got_eacces = false;
 	const char *p;
@@ -375,11 +532,6 @@ find_path(notify_script_t *script, bool full_string)
 	/* We check the simple case first. */
 	if (*file == '\0')
 		return ENOENT;
-
-	if (!full_string) {
-		if ((space = strchr(file, ' ')))
-			*space = '\0';
-	}
 
 	filename_len = strlen(file);
 	if (filename_len >= PATH_MAX) {
@@ -471,44 +623,31 @@ find_path(notify_script_t *script, bool full_string)
 		ret = stat (buffer, &buf);
 		if (!ret) {
 			if (!S_ISREG(buf.st_mode))
-				ret = EACCES;
+				errno = EACCES;
 			else if (!is_executable(&buf, script->uid, script->gid)) {
-				ret = EACCES;
+				errno = EACCES;
+			} else {
+				/* Success */
+				log_message(LOG_INFO, "WARNING - script `%s` resolved by path search to `%s`. Please specify full path.", script->args[0], buffer);
+
+				/* Copy the found file name, and any parameters */
+				replace_cmd_name(script, buffer);
+
+				ret_val = 0;
+				got_eacces = false;
+				goto exit;
 			}
 		}
-		else
-			ret = errno;
 
-		if (!ret) {
-			/* Success */
-			log_message(LOG_INFO, "WARNING - script `%s` resolved by path search to `%s`. Please specify full path.", script->name, buffer); 
-
-			/* Copy the found file name, and append any parameters */
-			file = MALLOC(strlen(buffer) + (space ? strlen(space + 1) + 1 : 0) + 1);
-			strcpy(file, buffer);
-			if (space) {
-				filename_len = strlen(file);
-				file[filename_len] = ' ';
-				strcpy(file + filename_len + 1, space + 1);
-				space = NULL;
-			}
-
-			FREE(script->name);
-			script->name = file;
-
-			ret_val = 0;
-			got_eacces = false;
-			goto exit;
-		}
-
-		switch (ret)
+		switch (errno)
 		{
 		case ENOEXEC:
 		case EACCES:
 			/* Record that we got a 'Permission denied' error.  If we end
 			   up finding no executable we can use, we want to diagnose
 			   that we did find one but were denied access. */
-			got_eacces = true;
+			if (!ret)
+				got_eacces = true;
 		case ENOENT:
 		case ESTALE:
 		case ENOTDIR:
@@ -551,9 +690,6 @@ exit:
 	}
 
 exit1:
-	if (space)
-		*space = ' ';
-
 	/* We tried every element and none of them worked. */
 	if (got_eacces) {
 		/* At least one failure was due to permissions, so report that error. */
@@ -575,7 +711,7 @@ check_security(char *filename, bool script_security)
 
 	next = filename;
 	while (next) {
-		slash = next + strcspn(next, "/");
+		slash = strchrnul(next, '/');
 		if (*slash)
 			next = slash + 1;
 		else {
@@ -599,9 +735,9 @@ check_security(char *filename, bool script_security)
 
 		if (ret) {
 			if (errno == EACCES || errno == ELOOP || errno == ENOENT || errno == ENOTDIR)
-				log_message(LOG_INFO, "check_script_secure could not find script '%s'", filename);
+				log_message(LOG_INFO, "check_script_secure could not find script '%s' - disabling", filename);
 			else
-				log_message(LOG_INFO, "check_script_secure('%s') returned errno %d - %s", filename, errno, strerror(errno));
+				log_message(LOG_INFO, "check_script_secure('%s') returned errno %d - %s - disabling", filename, errno, strerror(errno));
 			return flags | SC_NOTFOUND;
 		}
 
@@ -621,7 +757,7 @@ check_security(char *filename, bool script_security)
 		      S_ISREG(buf.st_mode)) &&			/* This is a file */
 		     ((buf.st_gid && buf.st_mode & S_IWGRP) ||	/* Group is not root and group write permission */
 		      buf.st_mode & S_IWOTH))) {		/* World has write permission */
-			log_message(LOG_INFO, "Unsafe permissions found for script '%s'.", filename);
+			log_message(LOG_INFO, "Unsafe permissions found for script '%s'%s.", filename, script_security ? " - disabling" : "");
 			flags |= SC_INSECURE;
 			return flags | (script_security ? SC_INHIBIT : 0);
 		}
@@ -631,52 +767,45 @@ check_security(char *filename, bool script_security)
 }
 
 int
-check_script_secure(notify_script_t *script, bool script_security, bool full_string)
+check_script_secure(notify_script_t *script,
+#ifndef _HAVE_LIBMAGIC_
+					     __attribute__((unused))
+#endif
+								     magic_t magic)
 {
 	int flags;
-	char *space = NULL;
-	char *slash;
-	int ret;
-	struct stat file_buf;
+	int ret, ret_real, ret_new;
+	struct stat file_buf, real_buf;
 	bool need_script_protection = false;
 	uid_t old_uid = 0;
 	gid_t old_gid = 0;
 	char *new_path;
-	size_t len;
-	char *new_script_name;
-	size_t new_path_len;
 	int sav_errno;
 	char *real_file_path;
 	char *orig_file_part, *new_file_part;
-	char *dir_path;
 
 	if (!script)
 		return 0;
 
-	if (!full_string)
-		space = strchr(script->name, ' ');
+	/* If the script starts "</" (possibly with white space between
+	 * the '<' and '/'), it is checking for a file being openable,
+	 * so it won't be executed */
+	if (script->args[0][0] == '<' &&
+	    script->args[0][strspn(script->args[0] + 1, " \t") + 1] == '/')
+		return SC_SYSTEM;
 
-	slash = strchr(script->name, '/');
-	if (!slash ||
-	    (space && space < slash)) {
+	if (!strchr(script->args[0], '/')) {
 		/* It is a bare file name, so do a path search */
-		if ((ret = find_path(script, full_string))) {
+		if ((ret = find_path(script))) {
 			if (ret == EACCES)
-				log_message(LOG_INFO, "Permissions failure for script %s in path", script->name);
+				log_message(LOG_INFO, "Permissions failure for script %s in path - disabling", script->args[0]);
 			else
-				log_message(LOG_INFO, "Cannot find script %s in path", script->name);
+				log_message(LOG_INFO, "Cannot find script %s in path - disabling", script->args[0]);
 			return SC_NOTFOUND;
 		}
 	}
 
-	/* Get the permissions for the file itself */
-	if (!full_string) {
-		space = strchr(script->name, ' ');
-		if (space)
-			*space = '\0';
-	}
-
-	/* Remove symbolic links, /./ and /../, and also check script accessible by the user running it */
+	/* Check script accessible by the user running it */
 	if (script->uid)
 		old_uid = geteuid();
 	if (script->gid)
@@ -684,79 +813,74 @@ check_script_secure(notify_script_t *script, bool script_security, bool full_str
 
 	if ((script->gid && setegid(script->gid)) ||
 	    (script->uid && seteuid(script->uid))) {
-		log_message(LOG_INFO, "Unable to set uid:gid %d:%d for script %s - disabling", script->uid, script->gid, script->name);
+		log_message(LOG_INFO, "Unable to set uid:gid %d:%d for script %s - disabling", script->uid, script->gid, script->args[0]);
 
 		if ((script->uid && seteuid(old_uid)) ||
 		    (script->gid && setegid(old_gid)))
-			log_message(LOG_INFO, "Unable to restore uid:gid %d:%d after script %s", script->uid, script->gid, script->name);
-
-		if (space)
-			*space = ' ';
+			log_message(LOG_INFO, "Unable to restore uid:gid %d:%d after script %s", script->uid, script->gid, script->args[0]);
 
 		return SC_INHIBIT;
 	}
 
 	/* Remove /./, /../, multiple /'s, and resolve symbolic links */
-	new_path = realpath(script->name, NULL);
+	new_path = realpath(script->args[0], NULL);
 	sav_errno = errno;
 
 	if ((script->gid && setegid(old_gid)) ||
 	    (script->uid && seteuid(old_uid)))
-		log_message(LOG_INFO, "Unable to restore uid:gid %d:%d after checking script %s", script->uid, script->gid, script->name);
+		log_message(LOG_INFO, "Unable to restore uid:gid %d:%d after checking script %s", script->uid, script->gid, script->args[0]);
 
 	if (!new_path)
 	{
-		log_message(LOG_INFO, "Script %s cannot be accessed - %s", script->name, strerror(sav_errno));
-
-		if (space)
-			*space = ' ';
+		log_message(LOG_INFO, "Script %s cannot be accessed - %s", script->args[0], strerror(sav_errno));
 
 		return SC_NOTFOUND;
 	}
 
 	real_file_path = NULL;
-	if (strcmp(script->name, new_path)) {
+
+	orig_file_part = strrchr(script->args[0], '/');
+	new_file_part = strrchr(new_path, '/');
+	if (strcmp(script->args[0], new_path)) {
 		/* The path name is different */
 
 		/* If the file name parts don't match, we need to be careful to
 		 * ensure that we preserve the file name part since some executables
 		 * alter their behaviour based on what they are called */
-		orig_file_part = strrchr(script->name, '/');
-		new_file_part = strrchr(new_path, '/');
 		if (strcmp(orig_file_part + 1, new_file_part + 1)) {
-			*orig_file_part = '\0';
-			dir_path = realpath(script->name, NULL);
-			*orig_file_part = '/';
 			real_file_path = new_path;
-			new_path = MALLOC(strlen(dir_path) + 1 + strlen(orig_file_part + 1) + 1);
-			strcpy(new_path, dir_path);
-			strcat(new_path, "/");
-			strcat(new_path, orig_file_part + 1);
+			new_path = MALLOC(new_file_part - real_file_path + 1 + strlen(orig_file_part + 1) + 1);
+			strncpy(new_path, real_file_path, new_file_part + 1 - real_file_path);
+			strcpy(new_path + (new_file_part + 1 - real_file_path), orig_file_part + 1);
+
+			/* Now check this is the same file */
+			ret_real = stat(real_file_path, &real_buf);
+			ret_new = stat(new_path, &file_buf);
+			if (!ret_real &&
+			    (ret_new ||
+			     real_buf.st_dev != file_buf.st_dev ||
+			     real_buf.st_ino != file_buf.st_ino)) {
+				/* It doesn't resolve to the same file */
+				FREE(new_path);
+				new_path = real_file_path;
+				real_file_path = NULL;
+			}
 		}
 
-		new_path_len = strlen(new_path);
-		len = new_path_len + 1;
-		if (space)
-			len += strlen(space + 1) + 1;
-		new_script_name = MALLOC(len);
-		strcpy(new_script_name, new_path);
-		if (space) {
-			strcpy(new_script_name + new_path_len + 1, space + 1);
-			space = new_script_name + new_path_len;
+		if (strcmp(script->args[0], new_path)) {
+	 		/* We need to set up all the args again */
+			replace_cmd_name(script, new_path);
 		}
-
-		FREE(script->name);
-		script->name = new_script_name;
 	}
+
 	if (!real_file_path)
 		free(new_path);
 	else
 		FREE(new_path);
 
-	if (stat(real_file_path ? real_file_path : script->name, &file_buf)) {
-		log_message(LOG_INFO, "Unable to access script `%s`", script->name);
-		if (space)
-			*space = ' ';
+	/* Get the permissions for the file itself */
+	if (stat(real_file_path ? real_file_path : script->args[0], &file_buf)) {
+		log_message(LOG_INFO, "Unable to access script `%s` - disabling", script->args[0]);
 		return SC_NOTFOUND;
 	}
 
@@ -770,34 +894,41 @@ check_script_secure(notify_script_t *script, bool script_security, bool full_str
 		    (file_buf.st_gid == 0 && (file_buf.st_mode & S_IXGRP) && (file_buf.st_mode & S_ISGID)))
 			need_script_protection = true;
 	} else
-		log_message(LOG_INFO, "WARNING - script '%s' is not executable by uid:gid %d:%d - disabling.", script->name, script->uid, script->gid);
+		log_message(LOG_INFO, "WARNING - script '%s' is not executable for uid:gid %d:%d - disabling.", script->args[0], script->uid, script->gid);
+
+	/* Default to execable */
+	script->flags |= SC_EXECABLE;
+#ifdef _HAVE_LIBMAGIC_
+	if (magic && flags & SC_EXECUTABLE) {
+		const char *magic_desc = magic_file(magic, real_file_path ? real_file_path : script->args[0]);
+		if (!strstr(magic_desc, " executable") &&
+		    !strstr(magic_desc, " shared object")) {
+			log_message(LOG_INFO, "Please add a #! shebang to script %s", script->args[0]);
+			script->flags &= ~SC_EXECABLE;
+		}
+	}
+#endif
 
 	if (!need_script_protection) {
 		if (real_file_path)
 			free(real_file_path);
 
-		if (space)
-			*space = ' ';
-
 		return flags;
 	}
 
 	/* Make sure that all parts of the path are not non-root writable */
-	flags |= check_security(script->name, script_security);
+	flags |= check_security(script->args[0], script_security);
 
 	if (real_file_path) {
 		flags |= check_security(real_file_path, script_security);
 		free(real_file_path);
 	}
 
-	if (space)
-		*space = ' ';
-
 	return flags;
 }
 
 int
-check_notify_script_secure(notify_script_t **script_p, bool script_security, bool full_string)
+check_notify_script_secure(notify_script_t **script_p, magic_t magic)
 {
 	int flags;
 	notify_script_t *script = *script_p;
@@ -805,18 +936,11 @@ check_notify_script_secure(notify_script_t **script_p, bool script_security, boo
 	if (!script)
 		return 0;
 
-	flags = check_script_secure(script, script_security, full_string);
+	flags = check_script_secure(script, magic);
 
 	/* Mark not to run if needs inhibiting */
-	if (flags & SC_INHIBIT) {
-		log_message(LOG_INFO, "Disabling notify script %s due to insecure", script->name);
-		free_notify_script(script_p);
-	}
-	else if (flags & SC_NOTFOUND) {
-		log_message(LOG_INFO, "Disabling notify script %s since not found/accessible", script->name);
-		free_notify_script(script_p);
-	}
-	else if (!(flags & SC_EXECUTABLE))
+	if ((flags & (SC_INHIBIT | SC_NOTFOUND)) ||
+	    !(flags & SC_EXECUTABLE))
 		free_notify_script(script_p);
 
 	return flags;
@@ -894,8 +1018,9 @@ set_uid_gid(const char *username, const char *groupname, uid_t *uid_p, gid_t *gi
 	return false;
 }
 
+/* The default script user/group is keepalived_script if it exists, or root otherwise */
 bool
-set_default_script_user(const char *username, const char *groupname, bool script_security)
+set_default_script_user(const char *username, const char *groupname)
 {
 	if (!default_script_uid_set || username) {
 		/* Even if we fail to set it, there is no point in trying again */
@@ -927,24 +1052,84 @@ set_script_uid_gid(vector_t *strvec, unsigned keyword_offset, uid_t *uid_p, gid_
 	return set_uid_gid(username, groupname, uid_p, gid_p, false);
 }
 
+void
+set_script_params_array(vector_t *strvec, notify_script_t *script, unsigned extra_params)
+{
+	unsigned num_words = 0;
+	size_t len = 0;
+	char **word_ptrs;
+	char *words;
+	vector_t *strvec_qe = NULL;
+	unsigned i;
+
+	/* Count the number of words, and total string length */
+	if (vector_size(strvec) >= 2)
+		strvec_qe = alloc_strvec_quoted_escaped(strvec_slot(strvec, 1));
+
+	if (!strvec_qe)
+		return;
+
+	num_words = vector_size(strvec_qe);
+	for (i = 0; i < num_words; i++)
+		len += strlen(strvec_slot(strvec_qe, i)) + 1;
+
+	/* Allocate memory for pointers to words and words themselves */
+	script->args = word_ptrs = MALLOC((num_words + extra_params + 1) * sizeof(char *) + len);
+	words = (char *)word_ptrs + (num_words + extra_params + 1) * sizeof(char *);
+
+	/* Set up pointers to words, and copy the words */
+	for (i = 0; i < num_words; i++) {
+		strcpy(words, strvec_slot(strvec_qe, i));
+		*(word_ptrs++) = words;
+		words += strlen(words) + 1;
+	}
+	*word_ptrs = NULL;
+
+	script->num_args = num_words;
+
+	free_strvec(strvec_qe);
+}
+
 notify_script_t*
-notify_script_init(vector_t *strvec, const char *type, bool script_security)
+notify_script_init(int extra_params, const char *type)
 {
 	notify_script_t *script = MALLOC(sizeof(notify_script_t));
+	vector_t *strvec_qe;
 
-	script->name = set_value(strvec);
+	/* We need to reparse the command line, allowing for quoted and escaped strings */
+	strvec_qe = alloc_strvec_quoted_escaped(NULL);
 
-	if (vector_size(strvec) > 2) {
-		if (set_script_uid_gid(strvec, 2, &script->uid, &script->gid)) {
-			log_message(LOG_INFO, "Invalid user/group for %s script %s - ignoring", type, script->name);
+	if (!strvec_qe) {
+		log_message(LOG_INFO, "Unable to parse notify script");
+		FREE(script);
+		return NULL;
+	}
+
+	set_script_params_array(strvec_qe, script, extra_params);
+	if (!script->args) {
+		log_message(LOG_INFO, "Unable to parse script '%s' - ignoring", FMT_STR_VSLOT(strvec_qe, 1));
+		FREE(script);
+		free_strvec(strvec_qe);
+		return NULL;
+	}
+
+	script->flags = 0;
+
+	if (vector_size(strvec_qe) > 2) {
+		if (set_script_uid_gid(strvec_qe, 2, &script->uid, &script->gid)) {
+			log_message(LOG_INFO, "Invalid user/group for %s script %s - ignoring", type, script->args[0]);
+			FREE(script->args);
 			FREE(script);
+			free_strvec(strvec_qe);
 			return NULL;
 		}
-        }
+	}
 	else {
-		if (set_default_script_user(NULL, NULL, script_security)) {
-			log_message(LOG_INFO, "Failed to set default user for %s script %s - ignoring", type, script->name);
+		if (set_default_script_user(NULL, NULL)) {
+			log_message(LOG_INFO, "Failed to set default user for %s script %s - ignoring", type, script->args[0]);
+			FREE(script->args);
 			FREE(script);
+			free_strvec(strvec_qe);
 			return NULL;
 		}
 
@@ -952,5 +1137,56 @@ notify_script_init(vector_t *strvec, const char *type, bool script_security)
 		script->gid = default_script_gid;
 	}
 
+	free_strvec(strvec_qe);
+
 	return script;
 }
+
+void
+add_script_param(notify_script_t *script, char *param)
+{
+	/* We store the args as an array of pointers to the args, terminated
+	 * by a NULL pointer, followed by the null terminated strings themselves
+	 */
+
+	if (script->args[script->num_args + 1]) {
+		log_message(LOG_INFO, "notify_fifo_script %s no room to add parameter %s", script->args[0], param);
+		return;
+	}
+
+	/* Add the extra parameter in the pre-reserved slot at the end */
+	script->args[script->num_args++] = param;
+}
+
+void
+notify_resource_release(void)
+{
+	if (path_is_malloced) {
+		FREE(path);
+		path_is_malloced = false;
+		path = NULL;
+	}
+}
+
+bool
+notify_script_compare(notify_script_t *a, notify_script_t *b)
+{
+	int i;
+
+	if (a->num_args != b->num_args)
+		return false;
+	for (i = 0; i < a->num_args; i++) {
+		if (strcmp(a->args[i], b->args[i]))
+			return false;
+	}
+
+	return true;
+}
+
+#ifdef THREAD_DUMP
+void
+register_notify_addresses(void)
+{
+	register_thread_address("child_killed_thread", child_killed_thread);
+}
+#endif

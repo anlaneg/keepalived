@@ -22,15 +22,13 @@
 
 #include "config.h"
 
+#include <fcntl.h>
+
 /* keepalived include */
 #include "utils.h"
 
 /* genhash includes */
 #include "include/layer4.h"
-#include "include/main.h"
-#include "include/sock.h"
-#include "include/http.h"
-#include "include/ssl.h"
 
 static enum connect_result
 tcp_connect(int fd, REQ * req_obj)
@@ -109,7 +107,7 @@ tcp_socket_state(thread_t * thread, int (*func) (thread_t *))
 	if (thread->type == THREAD_WRITE_TIMEOUT) {
 		DBG("TCP connection timeout to [%s]:%d.\n",
 		    req->ipaddress, ntohs(req->addr_port));
-		close(thread->u.fd);
+		thread_close_fd(thread);
 		return connect_timeout;
 	}
 
@@ -123,7 +121,7 @@ tcp_socket_state(thread_t * thread, int (*func) (thread_t *))
 	if (ret) {
 		DBG("TCP connection failed to [%s]:%d.\n",
 		    req->ipaddress, ntohs(req->addr_port));
-		close(thread->u.fd);
+		thread_close_fd(thread);
 		return connect_error;
 	}
 
@@ -207,6 +205,7 @@ tcp_check_thread(thread_t * thread)
 				sock_obj->lock = 0;
 				thread_add_event(thread->master,
 						 http_request_thread, sock_obj, 0);
+				thread_del_write(thread);
 			} else {
 				DBG("Connection trouble to: [%s]:%d.\n",
 				    req->ipaddress,

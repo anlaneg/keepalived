@@ -24,18 +24,19 @@
 #define _CHECK_DAEMON_H
 
 /* system include */
-#include <stdlib.h>
-#include <signal.h>
 #include <stdbool.h>
 
 /* Daemon define */
 #define PROG_CHECK	"Keepalived_healthcheckers"
-#define WDOG_CHECK	"/tmp/.healthcheckers"
 
 /* Global data */
 extern bool using_ha_suspend;
 
 /* Prototypes */
 extern int start_check_child(void);
+extern void check_validate_config(void);
+#ifdef THREAD_DUMP
+extern void register_check_parent_addresses(void);
+#endif
 
 #endif

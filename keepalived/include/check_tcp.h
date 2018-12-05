@@ -23,18 +23,13 @@
 #ifndef _CHECK_TCP_H
 #define _CHECK_TCP_H
 
-/* system includes */
-#include <unistd.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-
-/* local includes */
-#include "scheduler.h"
-
 /* macro utility */
 #define FMT_TCP_RS(C) FMT_CHK(C)
 
 /* Prototypes defs */
 extern void install_tcp_check_keyword(void);
+#ifdef THREAD_DUMP
+extern void register_check_tcp_addresses(void);
+#endif
 
 #endif

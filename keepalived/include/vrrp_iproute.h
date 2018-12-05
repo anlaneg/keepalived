@@ -24,21 +24,29 @@
 #define _VRRP_IPROUTE_H
 
 /* global includes */
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <arpa/inet.h>
-//#include <linux/rtnetlink.h>
+#include <sys/types.h>
 #if HAVE_DECL_LWTUNNEL_ENCAP_MPLS
 #include <linux/mpls.h>
 #endif
-#include <stdint.h>
-#include <stdbool.h>
+#ifdef RTNETLINK_H_NEEDS_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+#include <linux/rtnetlink.h>
 
 /* local includes */
 #include "list.h"
 #include "vector.h"
 #include "vrrp_ipaddress.h"
 #include "vrrp_if.h"
+#include "vrrp_static_track.h"
+
+/* We hope to get an official definion for this, but until then make a private one */
+#ifndef RTPROT_KEEPALIVED
+#define RTPROT_KEEPALIVED       112     /* Keepalived daemon */
+#endif
 
 /* Buffer sizes for printing */
 #define	ROUTE_BUF_SIZE		1024
@@ -146,6 +154,7 @@ enum ip_route {
 	IPROUTE_QUICKACK,
 	IPROUTE_PREF,
 	IPROUTE_FASTOPEN_NO_COOKIE,
+	IPROUTE_TTL_PROPAGATE,
 };
 
 #define	IPROUTE_BIT_DSFIELD	(1<<IPROUTE_DSFIELD)
@@ -170,6 +179,7 @@ enum ip_route {
 #define	IPROUTE_BIT_QUICKACK	(1<<IPROUTE_QUICKACK)
 #define	IPROUTE_BIT_PREF	(1<<IPROUTE_PREF)
 #define	IPROUTE_BIT_FASTOPEN_NO_COOKIE	(1<<IPROUTE_FASTOPEN_NO_COOKIE)
+#define	IPROUTE_BIT_TTL_PROPAGATE (1<<IPROUTE_TTL_PROPAGATE)
 
 typedef struct _ip_route {
 	ip_address_t		*dst;
@@ -216,6 +226,9 @@ typedef struct _ip_route {
 #if HAVE_DECL_RTAX_FASTOPEN_NO_COOKIE
 	bool			fastopen_no_cookie;
 #endif
+#if HAVE_DECL_RTA_TTL_PROPAGATE
+	bool			ttl_propagate;
+#endif
 	uint8_t			type;
 
 	uint32_t		realms;
@@ -224,7 +237,10 @@ typedef struct _ip_route {
 #endif
 	list			nhs;
 	uint32_t		mask;
+	bool			dont_track;	/* used for virtual routes */
+	static_track_group_t	*track_group;	/* used for static routes */
 	bool			set;
+	uint32_t		configured_ifindex;	/* Index of interface route is configured on */
 } ip_route_t;
 
 #define IPROUTE_DEL	0
@@ -236,9 +252,10 @@ extern unsigned short add_addr2req(struct nlmsghdr *, size_t, unsigned short, ip
 extern void netlink_rtlist(list, int);
 extern void free_iproute(void *);
 extern void format_iproute(ip_route_t *, char *, size_t);
-extern void dump_iproute(void *);
-extern void alloc_route(list, vector_t *);
+extern void dump_iproute(FILE *, void *);
+extern void alloc_route(list, vector_t *, bool);
 extern void clear_diff_routes(list, list);
 extern void clear_diff_sroutes(void);
+extern void reinstate_static_route(ip_route_t *);
 
 #endif

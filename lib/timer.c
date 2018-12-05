@@ -22,242 +22,172 @@
 
 #include "config.h"
 
-#include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/time.h>
+#include <time.h>
+#include <stdbool.h>
+
 #include "timer.h"
+#ifdef _TIMER_CHECK_
+#include "logger.h"
+#endif
 
 /* time_now holds current time */
 timeval_t time_now;
+#ifdef _TIMER_CHECK_
+static timeval_t last_time;
+bool do_timer_check;
+#endif
 
-/* set a timer to a specific value */
-timeval_t
-timer_dup(timeval_t b)
-{
-	timeval_t a;
-
-	//创建一个b变量的副本
-	timer_reset_lazy(a);
-	a.tv_sec = b.tv_sec;
-	a.tv_usec = b.tv_usec;
-	return a;
-}
-
-/* timer compare */
-//=0 为相等，>0 时a比b大，<0时a比b小
-int
-timer_cmp(timeval_t a, timeval_t b)
-{
-	//先比较秒
-	time_t ret = a.tv_sec - b.tv_sec;
-	if (ret)
-		return ret < 0 ? -1 : 1;
-
-	//比较微秒
-	ret = a.tv_usec - b.tv_usec;
-	return ret < 0 ? -1 : ret > 0 ? 1 : 0;
-}
-
-/* timer sub */
-//事件的差值
-timeval_t
-timer_sub(timeval_t a, timeval_t b)
-{
-	timeval_t ret;
-
-	timer_reset_lazy(ret);
-	ret.tv_usec = a.tv_usec - b.tv_usec;
-	ret.tv_sec = a.tv_sec - b.tv_sec;
-
-	if (ret.tv_usec < 0) {
-		ret.tv_usec += TIMER_HZ;
-		ret.tv_sec--;
-	}
-
-	return ret;
-}
-
-/* timer add */
-//在时间a上加一个偏移量
-timeval_t
-timer_add(timeval_t a, timeval_t b)
-{
-	timeval_t ret;
-
-	timer_reset_lazy(ret);
-	ret.tv_usec = a.tv_usec + b.tv_usec;
-	ret.tv_sec = a.tv_sec + b.tv_sec;
-
-	if (ret.tv_usec >= (int)TIMER_HZ) {
-		ret.tv_sec++;
-		ret.tv_usec -= TIMER_HZ;
-	}
-
-	return ret;
-}
-
-//在时间a上添加一个b微秒的偏移量
 timeval_t
 timer_add_long(timeval_t a, unsigned long b)
 {
-	timeval_t ret;
-
-	timer_reset_lazy(ret);
-
 	if (b == TIMER_NEVER)
 	{
-		ret.tv_usec = TIMER_HZ - 1;
-		ret.tv_sec = LONG_MAX;
+		a.tv_usec = TIMER_HZ - 1;
+		a.tv_sec = LONG_MAX;
 
-		return ret;
+		return a;
 	}
 
-	ret.tv_usec = a.tv_usec + (int)(b % TIMER_HZ);
-	ret.tv_sec = a.tv_sec + (int)(b / TIMER_HZ);
+	a.tv_usec += b % TIMER_HZ;
+	a.tv_sec += b / TIMER_HZ;
 
-	if (ret.tv_usec >= (int)TIMER_HZ) {
-		ret.tv_sec++;
-		ret.tv_usec -= TIMER_HZ;
+	if (a.tv_usec >= TIMER_HZ) {
+		a.tv_sec++;
+		a.tv_usec -= TIMER_HZ;
 	}
 
-	return ret;
+	return a;
 }
 
-/* This function is a wrapper for gettimeofday(). It uses local storage to
- * guarantee that the returned time will always be monotonic. If the time goes
- * backwards, it returns the same as previous one and readjust its internal
- * drift. If the time goes forward further than TIME_MAX_FORWARD_US
- * microseconds since last call, it will bound it to that value. It is designed
- * to be used as a drop-in replacement of gettimeofday(&now, NULL). It will
- * normally return 0, unless <now> is NULL, in which case it will return -1 and
- * set errno to EFAULT.
+timeval_t
+timer_sub_long(timeval_t a, unsigned long b)
+{
+	if (a.tv_usec < (suseconds_t)(b % TIMER_HZ)) {
+		a.tv_usec += TIMER_HZ;
+		a.tv_sec--;
+	}
+	a.tv_usec -= b % TIMER_HZ;
+	a.tv_sec -= b / TIMER_HZ;
+
+	return a;
+}
+
+static void
+set_mono_offset(struct timespec *ts)
+{
+	struct timespec realtime, realtime_1, mono_offset;
+
+	/* Calculate the offset of the realtime clock from the monotonic
+	 * clock. We read the realtime clock twice and take the mean,
+	 * which should then make it very close to the time the monotonic
+	 * clock was read. */
+	clock_gettime(CLOCK_REALTIME, &realtime);
+	clock_gettime(CLOCK_MONOTONIC, &mono_offset);
+	clock_gettime(CLOCK_REALTIME, &realtime_1);
+
+	/* Calculate the mean realtime */
+	realtime.tv_nsec = (realtime.tv_nsec + realtime_1.tv_nsec) / 2;
+	if ((realtime.tv_sec + realtime_1.tv_sec) & 1)
+		realtime.tv_nsec += NSEC_PER_SEC / 2;
+	realtime.tv_sec = (realtime.tv_sec + realtime_1.tv_sec) / 2;
+
+	if (realtime.tv_nsec < mono_offset.tv_nsec) {
+		realtime.tv_nsec += NSEC_PER_SEC;
+		realtime.tv_sec--;
+	}
+	realtime.tv_sec -= mono_offset.tv_sec;
+	realtime.tv_nsec -= mono_offset.tv_nsec;
+
+	*ts = realtime;
+}
+
+/* This function is a wrapper for gettimeofday(). It uses the monotonic clock to
+ * guarantee that the returned time will always be monotonicly increasing.
+ * When called for the first time it calculates the difference between the
+ * monotonic clock and the realtime clock, and this difference is then subsequently
+ * added to the monotonic clock to return a monotonic approximation to realtime.
+ *
+ * It is designed to be used as a drop-in replacement of gettimeofday(&now, NULL).
+ * It will normally return 0, unless <now> is NULL, in which case it will
+ * return -1 and set errno to EFAULT.
  */
 static int
 monotonic_gettimeofday(timeval_t *now)
 {
-	static timeval_t mono_date;
-	static timeval_t drift; /* warning: signed seconds! */
-	timeval_t sys_date, adjusted, deadline;
+	static struct timespec mono_offset;
+	static bool initialised = false;
+	struct timespec cur_time;
 
 	if (!now) {
 		errno = EFAULT;
 		return -1;
 	}
 
-	timer_reset_lazy(*now);
-
-	//返回当前时间
-	gettimeofday(&sys_date, NULL);
-
-	/* on first call, we set mono_date to system date */
-	//首次更新，设置mono_data
-	if (mono_date.tv_sec == 0) {
-		mono_date = sys_date;
-		timer_reset(drift);
-		*now = mono_date;
-		return 0;
+	if (!initialised) {
+		set_mono_offset(&mono_offset);
+		initialised = true;
 	}
 
-	/* compute new adjusted time by adding the drift offset */
-	adjusted = timer_add(sys_date, drift);
-
-	/* check for jumps in the past, and bound to last date */
-	if (timer_cmp(adjusted, mono_date) < 0)
-		goto fixup;
-
-	/* check for jumps too far in the future, and bound them to
-	 * TIME_MAX_FORWARD_US microseconds.
-	 */
-	deadline = timer_add_long(mono_date, TIME_MAX_FORWARD_US);
-	if (timer_cmp (adjusted, deadline) >= 0) {
-		//调整后的时间比deadline大，以deadline为准
-		mono_date = deadline;
-		goto fixup;
+	/* Read the monotonic clock and add the offset we initially
+	 * calculated of the realtime clock */
+	clock_gettime(CLOCK_MONOTONIC, &cur_time);
+	cur_time.tv_sec += mono_offset.tv_sec;
+	cur_time.tv_nsec += mono_offset.tv_nsec;
+	if (cur_time.tv_nsec > NSEC_PER_SEC) {
+		cur_time.tv_nsec -= NSEC_PER_SEC;
+		cur_time.tv_sec++;
 	}
 
-	/* adjusted date is correct */
-	mono_date = adjusted;
-	*now = mono_date;
-	return 0;
+	TIMESPEC_TO_TIMEVAL(now, &cur_time);
 
- fixup:
-	/* Now we have to recompute the drift between sys_date and
-	 * mono_date. Since it can be negative and we don't want to
-	 * play with negative carries in all computations, we take
-	 * care of always having the microseconds positive.
-	 */
-	drift = timer_sub(mono_date, sys_date);
-	*now = mono_date;
 	return 0;
 }
 
 /* current time */
 timeval_t
+#ifdef _TIMER_CHECK_
+timer_now_r(const char *file, const char *function, int line_no)
+#else
 timer_now(void)
+#endif
 {
 	timeval_t curr_time;
-	int old_errno = errno;
 
 	/* init timer */
-	if (monotonic_gettimeofday(&curr_time)) {
-		timer_reset(curr_time);
-		errno = old_errno;
+	monotonic_gettimeofday(&curr_time);
+
+#ifdef _TIMER_CHECK_
+	if (do_timer_check) {
+		unsigned long timediff = (curr_time.tv_sec - last_time.tv_sec) * 1000000 + curr_time.tv_usec - last_time.tv_usec;
+		log_message(LOG_INFO, "timer_now called from %s %s:%d - difference %lu usec", file, function, line_no, timediff);
+		last_time = curr_time;
 	}
+#endif
 
 	return curr_time;
 }
 
 /* sets and returns current time from system time */
 timeval_t
+#ifdef _TIMER_CHECK_
+set_time_now_r(const char *file, const char *function, int line_no)
+#else
 set_time_now(void)
+#endif
 {
-	int old_errno = errno;
-
 	/* init timer */
-	if (monotonic_gettimeofday(&time_now)) {
-		timer_reset(time_now);
-		errno = old_errno;
+	monotonic_gettimeofday(&time_now);
+
+#ifdef _TIMER_CHECK_
+	if (do_timer_check) {
+		unsigned long timediff = (time_now.tv_sec - last_time.tv_sec) * 1000000 + time_now.tv_usec - last_time.tv_usec;
+		log_message(LOG_INFO, "set_time_now called from %s %s:%d, time %ld.%6.6lu difference %lu usec", file, function, line_no, time_now.tv_sec, time_now.tv_usec, timediff);
+		last_time = time_now;
 	}
+#endif
 
 	return time_now;
 }
-
-/* timer sub from current time */
-//时间a减去当前时间
-timeval_t
-timer_sub_now(timeval_t a)
-{
-	return timer_sub(a, time_now);
-}
-
-/* timer add to current time */
-//时间a加上当前时间
-timeval_t
-timer_add_now(timeval_t a)
-{
-	/* Init current time if needed */
-	if (timer_isnull(time_now))
-		set_time_now();
-
-	return timer_add(time_now, a);
-}
-
-/* Return time as unsigned long */
-//将当前事件换算为微秒
-unsigned long
-timer_tol(timeval_t a)
-{
-	unsigned long timer;
-	timer = (unsigned long)a.tv_sec * TIMER_HZ + (unsigned long)a.tv_usec;
-	return timer;
-}
-
-#ifdef _INCLUDE_UNUSED_CODE_
-/* print timer value */
-//显示时间a对应的微秒数
-void
-timer_dump(timeval_t a)
-{
-	printf("=> %lu (usecs)\n", timer_tol(a));
-}
-#endif

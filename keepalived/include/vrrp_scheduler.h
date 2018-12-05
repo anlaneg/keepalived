@@ -24,52 +24,48 @@
 #define _VRRP_SCHEDULER_H
 
 /* system include */
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/types.h>
-#include <string.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <stdbool.h>
 
 /* local includes */
 #include "scheduler.h"
-#include "list.h"
+#include "timer.h"
 #include "vrrp_data.h"
+#include "vrrp.h"
 
 /* global vars */
 extern timeval_t garp_next_time;
 extern thread_t *garp_thread;
-
-/* VRRP FSM Macro */
-//vrrp依据当前状态触发定时器读超时
-#define VRRP_FSM_READ_TO(V)			\
-do {						\
-  if ((*(VRRP_FSM[(V)->state].read_timeout)))	\
-    (*(VRRP_FSM[(V)->state].read_timeout)) (V);	\
-} while (0)
-
-//vrrp依据当前状态消费读到的报文
-#define VRRP_FSM_READ(V, B, L)			\
-do {						\
-  if ((*(VRRP_FSM[(V)->state].read)))		\
-    (*(VRRP_FSM[(V)->state].read)) (V, B, L);	\
-} while (0)
+extern bool vrrp_initialised;
 
 /* VRRP TSM Macro */
 #define VRRP_TSM_HANDLE(S,V)			\
 do {						\
   if ((V)->sync &&				\
-      S != VRRP_STATE_GOTO_MASTER)		\
-    if ((*(VRRP_TSM[S][(V)->state].handler)))	\
+      (*(VRRP_TSM[S][(V)->state].handler)))	\
       (*(VRRP_TSM[S][(V)->state].handler)) (V);	\
 } while (0)
 
+#ifdef _TSM_DEBUG_
+extern bool do_tsm_debug;
+#endif
+
 /* extern prototypes */
+extern void vrrp_init_instance_sands(vrrp_t *);
+extern void vrrp_thread_requeue_read(vrrp_t *);
+extern void vrrp_thread_add_read(vrrp_t *);
 extern int vrrp_dispatcher_init(thread_t *);
 extern void vrrp_dispatcher_release(vrrp_data_t *);
+extern int vrrp_gratuitous_arp_thread(thread_t *);
 extern int vrrp_lower_prio_gratuitous_arp_thread(thread_t *);
-extern void vrrp_set_effective_priority(vrrp_t *, uint8_t);
 extern int vrrp_arp_thread(thread_t *);
+extern void try_up_instance(vrrp_t *, bool);
+#ifdef _WITH_DUMP_THREADS_
+extern void dump_threads(void);
+#endif
+#ifdef THREAD_DUMP
+extern void register_vrrp_scheduler_addresses(void);
+#endif
 
 #endif

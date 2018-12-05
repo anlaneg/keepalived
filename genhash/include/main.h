@@ -70,8 +70,11 @@ typedef struct {
 	char		*vhost;
 	int		verbose;
 	int		ssl;
+#ifdef _HAVE_SSL_SET_TLSEXT_HOST_NAME_
+	int		sni;
+#endif
 	SSL_CTX		*ctx;
-	SSL_METHOD	*meth;
+	const SSL_METHOD *meth;
 	enum		feat_hashes hash;
 	unsigned long	ref_time;
 	unsigned long	response_time;

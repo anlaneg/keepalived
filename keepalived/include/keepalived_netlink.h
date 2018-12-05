@@ -3,7 +3,7 @@
  *              <www.linuxvirtualserver.org>. It monitor & manipulate
  *              a loadbalanced server pool using multi-layer checks.
  *
- * Part:        vrrp_netlink.c include file.
+ * Part:        keepalived_netlink.c include file.
  *
  * Author:      Alexandre Cassen, <acassen@linux-vs.org>
  *
@@ -23,31 +23,23 @@
 #ifndef _VRRP_NETLINK_H
 #define _VRRP_NETLINK_H 1
 
+#include "config.h"
+
 /* global includes */
-#include <asm/types.h>
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
-#ifdef _HAVE_LIBNL3_
-#include <netlink/netlink.h>
-#include <libnfnetlink/libnfnetlink.h>
-#endif
-#ifdef _HAVE_LIBNL1_
-#include <libnfnetlink/libnfnetlink.h>
-#endif
 #include <stdint.h>
 #include <stdbool.h>
+#include <sys/types.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
 /* local includes */
-#include "timer.h"
+#include "scheduler.h"
 #ifdef _WITH_VRRP_
 #include "vrrp_if.h"
 #endif
 
 /* types definitions */
 typedef struct _nl_handle {
-#ifdef _HAVE_LIBNL3_
-	struct nl_sock*		sk;
-#endif
 	int			fd;
 	uint32_t		nl_pid;
 	__u32			seq;
@@ -55,12 +47,11 @@ typedef struct _nl_handle {
 } nl_handle_t;
 
 /* Define types */
-#define NETLINK_TIMER (30 * TIMER_HZ)
-#ifndef _HAVE_LIBNL3_
-#ifndef _HAVE_LIBNL1_
-#define NLMSG_TAIL(nmsg) ((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
-#define SOL_NETLINK 270
+#ifndef NLMSG_TAIL
+#define NLMSG_TAIL(nmsg) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len))
 #endif
+#if !defined SOL_NETLINK
+#define SOL_NETLINK 270
 #endif
 
 #define RTA_TAIL(rta)	((struct rtattr *) (((void *) (rta)) + RTA_ALIGN((rta)->rta_len)))
@@ -71,8 +62,14 @@ extern nl_handle_t nl_cmd;	/* Command channel */
 extern int netlink_error_ignore; /* If we get this error, ignore it */
 #endif
 
+#ifdef _NETLINK_TIMERS_
+extern bool do_netlink_timers;
+#endif
+
 /* prototypes */
-extern void netlink_set_recv_buf_size(void);
+#ifdef _NETLINK_TIMERS_
+extern void report_and_clear_netlink_timers(const char *);
+#endif
 #ifdef _WITH_VRRP_
 extern int addattr_l(struct nlmsghdr *, size_t, unsigned short, void *, size_t);
 extern int addattr8(struct nlmsghdr *, size_t, unsigned short, uint8_t);
@@ -91,8 +88,21 @@ extern size_t rta_nest_end(struct rtattr *, struct rtattr *);
 extern ssize_t netlink_talk(nl_handle_t *, struct nlmsghdr *);
 extern int netlink_interface_lookup(char *);
 extern void kernel_netlink_poll(void);
+extern void process_if_status_change(interface_t *);
+#endif
+extern void kernel_netlink_set_recv_bufs(void);
+#ifdef _HAVE_FIB_ROUTING_
+extern void set_extra_netlink_monitoring(bool, bool, bool, bool);
 #endif
 extern void kernel_netlink_init(void);
+#if defined _WITH_VRRP_ || defined _WITH_LVS_
+extern void kernel_netlink_read_interfaces(void);
+#endif
 extern void kernel_netlink_close(void);
+extern void kernel_netlink_close_monitor(void);
+extern void kernel_netlink_close_cmd(void);
+#ifdef THREAD_DUMP
+extern void register_keepalived_netlink_addresses(void);
+#endif
 
 #endif

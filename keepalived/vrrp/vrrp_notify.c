@@ -23,30 +23,37 @@
 #include "config.h"
 
 /* system include */
-#include <ctype.h>
+#include <errno.h>
+#include <unistd.h>
 
 /* local include */
 #include "vrrp_notify.h"
+#include "vrrp_data.h"
 #ifdef _WITH_DBUS_
 #include "vrrp_dbus.h"
 #endif
 #include "global_data.h"
-#include "memory.h"
 #include "notify.h"
 #include "logger.h"
+#if defined _WITH_SNMP_RFC_ || defined _WITH_SNMP_VRRP_
+#include "vrrp_snmp.h"
+#endif
+#include "smtp.h"
 
 //根据状态，确定返回对应状态的script
 static notify_script_t*
-get_iscript(vrrp_t * vrrp, int state)
+get_iscript(vrrp_t * vrrp)
 {
 	if (!vrrp->notify_exec)
 		return NULL;
-	if (state == VRRP_STATE_BACK)
+	if (vrrp->state == VRRP_STATE_BACK)
 		return vrrp->script_backup;
-	if (state == VRRP_STATE_MAST)
+	if (vrrp->state == VRRP_STATE_MAST)
 		return vrrp->script_master;
-	if (state == VRRP_STATE_FAULT)
+	if (vrrp->state == VRRP_STATE_FAULT)
 		return vrrp->script_fault;
+	if (vrrp->state == VRRP_STATE_STOP)
+		return vrrp->script_stop;
 	return NULL;
 }
 
@@ -61,70 +68,21 @@ get_gscript(vrrp_sgroup_t * vgroup, int state)
 		return vgroup->script_master;
 	if (state == VRRP_STATE_FAULT)
 		return vgroup->script_fault;
+	if (state == VRRP_STATE_STOP)
+		return vgroup->script_stop;
 	return NULL;
 }
 
-static notify_script_t*
+static inline notify_script_t*
 get_igscript(vrrp_t *vrrp)
 {
 	return vrrp->script;
 }
 
-static notify_script_t*
+static inline notify_script_t*
 get_ggscript(vrrp_sgroup_t * vgroup)
 {
 	return vgroup->script;
-}
-
-static char *
-notify_script_name(char *cmdline)
-{
-	char *cp = cmdline;
-	char *script;
-	size_t str_len;
-
-	if (!cmdline)
-		return NULL;
-	while (!isspace(*cp) && *cp != '\0')
-		cp++;//自前向后移动，遇到空格停下来
-	str_len = (size_t)(cp - cmdline);
-	script = MALLOC(str_len + 1);
-	memcpy(script, cmdline, str_len);
-	*(script + str_len) = '\0';
-
-	return script;//返回空格前的为script
-}
-
-//检查文件是否可读取
-static bool
-script_open_literal(char *script)
-{
-	log_message(LOG_DEBUG, "Opening script file %s",script);
-	FILE *fOut = fopen(script, "r");//读脚本文件
-	if (!fOut) {
-		log_message(LOG_INFO, "Can't open %s (errno %d %s)", script,
-		       errno, strerror(errno));
-		return false;
-	}
-	fclose(fOut);
-	return true;
-}
-
-//检查脚本文件是否可打开
-static bool
-script_open(notify_script_t *script)
-{
-	//返回空格前的脚本名称
-	char *name = notify_script_name(script->name);
-	int ret;
-
-	if (!name)
-		return false;
-
-	ret = script_open_literal(name);
-	FREE(name);
-
-	return ret;
 }
 
 static void
@@ -140,10 +98,21 @@ notify_fifo(const char *name, int state_num, bool group, uint8_t priority)
 		return;
 
 	switch (state_num) {
-		case VRRP_STATE_MAST  : state = "MASTER" ; break;
-		case VRRP_STATE_BACK  : state = "BACKUP" ; break;
-		case VRRP_STATE_FAULT : state = "FAULT" ; break;
-		case VRRP_STATE_STOP  : state = "STOP" ; break;
+	case VRRP_STATE_MAST:
+		state = "MASTER";
+		break;
+	case VRRP_STATE_BACK:
+		state = "BACKUP";
+		break;
+	case VRRP_STATE_FAULT:
+		state = "FAULT";
+		break;
+	case VRRP_STATE_STOP:
+		state = "STOP";
+		break;
+	case VRRP_EVENT_MASTER_RX_LOWER_PRI:
+		state = "MASTER_RX_LOWER_PRI";
+		break;
 	}
 
 	type = group ? "GROUP" : "INSTANCE";
@@ -166,101 +135,147 @@ notify_fifo(const char *name, int state_num, bool group, uint8_t priority)
 }
 
 //实现fifo通知
-void
-notify_instance_fifo(const vrrp_t *vrrp, int state_num)
+static void
+notify_instance_fifo(const vrrp_t *vrrp)
 {
-	notify_fifo(vrrp->iname, state_num, false, vrrp->effective_priority);
+	notify_fifo(vrrp->iname, vrrp->state, false, vrrp->effective_priority);
 }
 
 static void
-notify_group_fifo(const vrrp_sgroup_t *vgroup, int state_num)
+notify_group_fifo(const vrrp_sgroup_t *vgroup)
 {
-	notify_fifo(vgroup->gname, state_num, true, 0);
+	notify_fifo(vgroup->gname, vgroup->state, true, 0);
 }
 
 static void
-notify_script_exec(notify_script_t* script, const char *type, int state_num, char* name, int prio)
+notify_script_exec(notify_script_t* script, char *type, int state_num, char* name, int prio)
 {
-	const char *state = "{UNKNOWN}";
-	size_t size = 0;
-	notify_script_t new_script;
+	char prio_buf[4];
 
 	/*
-	 * Determine the length of the buffer that we'll need to generate the command
-	 * to run:
-	 *
-	 * "script" {GROUP|INSTANCE} "NAME" {MASTER|BACKUP|FAULT} PRIO
-	 *
-	 * Thus, the length of the buffer will be:
-	 *
-	 *     ( strlen(script) + 3 ) + ( strlen(type) + 1 ) + ( strlen(name) + 1 ) +
-	 *      ( strlen(state) + 2 ) + ( strlen(prio) + 1 ) + 1
+	 * script {GROUP|INSTANCE} NAME {MASTER|BACKUP|FAULT|STOP} PRIO
 	 *
 	 * Note that the prio will be indicated as zero for a group.
 	 *
-	 * Which is:
-	 *     - The length of the script plus two enclosing quotes plus adjacent space
-	 *     - The length of the type string plus the adjacent space
-	 *     - The length of the name of the instance or group, plus two enclosing
-	 *       quotes (just in case)
-	 *     - The length of the state string plus the adjacent space
-	 *     - The length of the priority value (3 digits) plus the adjacent
-	 *       space
-	 *     - The null-terminator
-	 *
-	 * Which results in:
-	 *
-	 *     strlen(script) + strlen(type) + strlen(state) + strlen(name) + 12
 	 */
+	script->args[script->num_args] = type;
+	script->args[script->num_args+1] = name;
 	switch (state_num) {
-		case VRRP_STATE_MAST  : state = "MASTER" ; break;
-		case VRRP_STATE_BACK  : state = "BACKUP" ; break;
-		case VRRP_STATE_FAULT : state = "FAULT" ; break;
+		case VRRP_STATE_MAST  : script->args[script->num_args+2] = "MASTER" ; break;
+		case VRRP_STATE_BACK  : script->args[script->num_args+2] = "BACKUP" ; break;
+		case VRRP_STATE_FAULT : script->args[script->num_args+2] = "FAULT" ; break;
+		case VRRP_STATE_STOP  : script->args[script->num_args+2] = "STOP" ; break;
+		default:		script->args[script->num_args+2] = "{UNKNOWN}"; break;
 	}
-
-	size = strlen(script->name) + strlen(type) + strlen(state) + strlen(name) + 12;
-	new_script.name = MALLOC(size);
-	if (!new_script.name)
-		return;
+	snprintf(prio_buf, sizeof(prio_buf), "%d", prio);
+	script->args[script->num_args+3] = prio_buf;
 
 	/* Launch the script */
-	//构造参数
-	snprintf(new_script.name, size, "\"%s\" %s \"%s\" %s %d",
-		 script->name, type, name, state, prio);
-	new_script.uid = script->uid;
-	new_script.gid = script->gid;
-
-	//执行脚本
-	notify_exec(&new_script);
-
-	FREE(new_script.name);
+	if (state_num == VRRP_STATE_STOP)
+		system_call_script(master, child_killed_thread, NULL, TIMER_HZ, script);
+	else
+		notify_exec(script);
 }
 
-//vrrp状态变换，执行相应通知
-int
-notify_instance_exec(vrrp_t * vrrp, int state)
+/* SMTP alert notifier */
+static void
+vrrp_smtp_notifier(vrrp_t * vrrp)
 {
-	notify_script_t *script = get_iscript(vrrp, state);
-	notify_script_t *gscript = get_igscript(vrrp);
-	int ret = 0;
+	if (vrrp->smtp_alert &&
+	    (!global_data->no_email_faults || vrrp->state != VRRP_STATE_FAULT) &&
+	    vrrp->last_email_state != vrrp->state) {
+		if (vrrp->state == VRRP_STATE_MAST)
+			smtp_alert(SMTP_MSG_VRRP, vrrp,
+				   "Entering MASTER state",
+				   "=> VRRP Instance is now owning VRRP VIPs <=");
+		else if (vrrp->state == VRRP_STATE_BACK)
+			smtp_alert(SMTP_MSG_VRRP, vrrp,
+				   "Entering BACKUP state",
+				   "=> VRRP Instance is no longer owning VRRP VIPs <=");
+		else if (vrrp->state == VRRP_STATE_FAULT)
+			smtp_alert(SMTP_MSG_VRRP, vrrp,
+				   "Entering FAULT state",
+				   "=> VRRP Instance is no longer owning VRRP VIPs <=");
+		else if (vrrp->state == VRRP_STATE_STOP)
+			smtp_alert(SMTP_MSG_VRRP, vrrp,
+				   "Stopping",
+				   "=> VRRP Instance stopping <=");
+		else
+			return;
+
+		vrrp->last_email_state = vrrp->state;
+	}
+}
+>>>>>>> upstream/master
+
+/* SMTP alert group notifier */
+static void
+vrrp_sync_smtp_notifier(vrrp_sgroup_t *vgroup)
+{
+	if (vgroup->smtp_alert &&
+	    (!global_data->no_email_faults || vgroup->state != VRRP_STATE_FAULT) &&
+	    vgroup->last_email_state != vgroup->state) {
+		if (vgroup->state == VRRP_STATE_MAST)
+			smtp_alert(SMTP_MSG_VGROUP, vgroup,
+				   "Entering MASTER state",
+				   "=> All VRRP group instances are now in MASTER state <=");
+		else if (vgroup->state == VRRP_STATE_BACK)
+			smtp_alert(SMTP_MSG_VGROUP, vgroup,
+				   "Entering BACKUP state",
+				   "=> All VRRP group instances are now in BACKUP state <=");
+		else if (vgroup->state == VRRP_STATE_FAULT)
+			smtp_alert(SMTP_MSG_VGROUP, vgroup,
+				   "Entering FAULT state",
+				   "=> All VRRP group instances are now in FAULT state <=");
+		else if (vgroup->state == VRRP_STATE_STOP)
+			smtp_alert(SMTP_MSG_VGROUP, vgroup,
+				   "Stopping",
+				   "=> All VRRP group instances are now stopping <=");
+		else
+			return;
+
+		vgroup->last_email_state = vgroup->state;
+	}
+}
+
+void
+send_event_notify(vrrp_t *vrrp, int event)
+{
+	notify_script_t *script = vrrp->script_master_rx_lower_pri;
 
 	/* Launch the notify_* script */
-	//脚本存在，执行脚本
-	if (script && script_open(script)) {
+	if (script)
 		notify_exec(script);
-		ret = 1;
+
+	notify_fifo(vrrp->iname, event, false, vrrp->effective_priority);
+}
+
+void
+send_instance_notifies(vrrp_t *vrrp)
+{
+	notify_script_t *script = get_iscript(vrrp);
+	notify_script_t *gscript = get_igscript(vrrp);
+
+	if (vrrp->sync && vrrp->state == vrrp->sync->state) {
+		/* We are already in the required state due to our sync group,
+		 * so don't send further notifies. */
+		return;
+	}
+
+	/* Launch the notify_* script */
+	if (script) {
+		if (vrrp->state == VRRP_STATE_STOP)
+			system_call_script(master, child_killed_thread, NULL, TIMER_HZ, script);
+		else
+			notify_exec(script);
 	}
 
 	/* Launch the generic notify script */
-	//检查一般性脚本是否存在，或存在，则执行
-	if (gscript && script_open_literal(gscript->name)) {
-		notify_script_exec(gscript, "INSTANCE", state, vrrp->iname,
+	if (gscript)
+		notify_script_exec(gscript, "INSTANCE", vrrp->state, vrrp->iname,
 				   vrrp->effective_priority);
-		ret = 1;
-	}
 
-	//实现fifo通知
-	notify_instance_fifo(vrrp, state);
+	notify_instance_fifo(vrrp);
 
 #ifdef _WITH_DBUS_
 	if (global_data->enable_dbus)
@@ -268,29 +283,57 @@ notify_instance_exec(vrrp_t * vrrp, int state)
 		dbus_send_state_signal(vrrp); // send signal to all subscribers
 #endif
 
-	return ret;
+#ifdef _WITH_SNMP_VRRP_
+	vrrp_snmp_instance_trap(vrrp);
+#endif
+	if (vrrp->state == VRRP_STATE_MAST) {
+#ifdef _WITH_SNMP_RFCV2_
+		vrrp_rfcv2_snmp_new_master_trap(vrrp);
+#endif
+#ifdef _WITH_SNMP_RFCV3_
+		vrrp_rfcv3_snmp_new_master_notify(vrrp);
+#endif
+	}
+	vrrp_smtp_notifier(vrrp);
 }
 
-int
-notify_group_exec(vrrp_sgroup_t * vgroup, int state)
+void
+send_group_notifies(vrrp_sgroup_t *vgroup)
 {
-	notify_script_t *script = get_gscript(vgroup, state);
+	notify_script_t *script = get_gscript(vgroup, vgroup->state);
 	notify_script_t *gscript = get_ggscript(vgroup);
-	int ret = 0;
 
 	/* Launch the notify_* script */
-	if (script && script_open(script)) {
+	if (script)
 		notify_exec(script);
-		ret = 1;
-	}
 
 	/* Launch the generic notify script */
-	if (gscript && script_open_literal(gscript->name)) {
-		notify_script_exec(gscript, "GROUP", state, vgroup->gname, 0);
-		ret = 1;
+	if (gscript)
+		notify_script_exec(gscript, "GROUP", vgroup->state, vgroup->gname, 0);
+
+	notify_group_fifo(vgroup);
+
+#ifdef _WITH_SNMP_VRRP_
+	vrrp_snmp_group_trap(vgroup);
+#endif
+	vrrp_sync_smtp_notifier(vgroup);
+}
+
+/* handle terminate state */
+void
+notify_shutdown(void)
+{
+	element e;
+	vrrp_t *vrrp;
+	vrrp_sgroup_t *vgroup;
+
+	LIST_FOREACH(vrrp_data->vrrp, vrrp, e) {
+		vrrp->state = VRRP_STATE_STOP;
+		send_instance_notifies(vrrp);
 	}
 
-	notify_group_fifo(vgroup, state);
-
-	return ret;
+	LIST_FOREACH(vrrp_data->vrrp_sync_group, vgroup, e) {
+		vgroup->state = VRRP_STATE_STOP;
+		send_group_notifies(vgroup);
+	}
 }

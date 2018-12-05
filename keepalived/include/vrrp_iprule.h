@@ -25,35 +25,47 @@
 #define _VRRP_IPRULE_H
 
 /* global includes */
-#include <stdio.h>
-#include <stdlib.h>
-#include <arpa/inet.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/types.h>
+#if HAVE_DECL_FRA_UID_RANGE
 #include <linux/fib_rules.h>
+#endif
 
 /* local includes */
-#include "list.h"
-#include "vector.h"
-#include "utils.h"
+#include "vrrp_if.h"
+#include "vrrp_ipaddress.h"
+#include "vrrp_static_track.h"
 
 /* print buffer sizes */
 #define	RULE_BUF_SIZE	256
 
 enum iprule_param_mask {
 	IPRULE_BIT_PRIORITY = 0x01,
-	IPRULE_BIT_DSFIELD = 0x02,
-	IPRULE_BIT_FWMARK = 0x04,
-	IPRULE_BIT_FWMASK = 0x08,
-	IPRULE_BIT_SUP_PREFIXLEN = 0x10,
-	IPRULE_BIT_SUP_GROUP = 0x20,
-	IPRULE_BIT_UID_RANGE = 0x40,
+	IPRULE_BIT_FWMARK = 0x02,
+	IPRULE_BIT_FWMASK = 0x04,
+	IPRULE_BIT_SUP_GROUP = 0x08,
+	IPRULE_BIT_UID_RANGE = 0x10,
+#if HAVE_DECL_FRA_PROTOCOL
+	IPRULE_BIT_PROTOCOL = 0x20,
+#endif
+#if HAVE_DECL_FRA_IP_PROTO
+	IPRULE_BIT_IP_PROTO = 0x40,
+#endif
+#if HAVE_DECL_FRA_SPORT_RANGE
+	IPRULE_BIT_SPORT_RANGE = 0x80,
+#endif
+#if HAVE_DECL_FRA_DPORT_RANGE
+	IPRULE_BIT_DPORT_RANGE = 0x100,
+#endif
 } ;
 
  /* types definition */
 typedef struct _ip_rule {
 	uint32_t	mask;
 	bool		invert;
+	int		family;
 	ip_address_t	*from_addr;
 	ip_address_t	*to_addr;
 	uint32_t	priority;
@@ -62,13 +74,15 @@ typedef struct _ip_rule {
 	uint32_t	fwmask;
 	uint32_t	realms;
 #if HAVE_DECL_FRA_SUPPRESS_PREFIXLEN
-	uint32_t	suppress_prefix_len;
+	int32_t		suppress_prefix_len;
 #endif
 #if HAVE_DECL_FRA_SUPPRESS_IFGROUP
 	uint32_t	suppress_group;
 #endif
 	interface_t	*iif;
+#if HAVE_DECL_FRA_OIFNAME
 	interface_t	*oif;
+#endif
 	uint32_t	goto_target;
 	uint32_t	table;
 	uint8_t		action;
@@ -81,22 +95,35 @@ typedef struct _ip_rule {
 #if HAVE_DECL_FRA_L3MDEV
 	bool		l3mdev;
 #endif
+#if HAVE_DECL_FRA_PROTOCOL
+	uint8_t		protocol;
+#endif
+#if HAVE_DECL_FRA_IP_PROTO
+	uint8_t		ip_proto;
+#endif
+#if HAVE_DECL_FRA_SPORT_RANGE
+	struct fib_rule_port_range src_port;
+#endif
+#if HAVE_DECL_FRA_DPORT_RANGE
+	struct fib_rule_port_range dst_port;
+#endif
+	bool		dont_track;     /* used for virtual rules */
+	static_track_group_t *track_group;   /* used for static rules */
 	bool		set;
 } ip_rule_t;
 
 #define IPRULE_DEL 0
 #define IPRULE_ADD 1
 
-#define VRRP_RULE_FROM	1
-#define VRRP_RULE_TO	2
-
 /* prototypes */
+extern void reinstate_static_rule(ip_rule_t *);
 extern void netlink_rulelist(list, int, bool);
 extern void free_iprule(void *);
 extern void format_iprule(ip_rule_t *, char *, size_t);
-extern void dump_iprule(void *);
-extern void alloc_rule(list, vector_t *);
+extern void dump_iprule(FILE *, void *);
+extern void alloc_rule(list, vector_t *, bool);
 extern void clear_diff_rules(list, list);
 extern void clear_diff_srules(void);
+extern void reset_next_rule_priority(void);
 
 #endif

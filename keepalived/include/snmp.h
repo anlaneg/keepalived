@@ -17,11 +17,16 @@
  *              as published by the Free Software Foundation; either version
  *              2 of the License, or (at your option) any later version.
  *
- * Copyright (C) 2001-2016 Alexandre Cassen, <acassen@gmail.com>
+ * Copyright (C) 2001-2017 Alexandre Cassen, <acassen@gmail.com>
  */
 
 #ifndef _SNMP_H
 #define _SNMP_H
+
+#include "config.h"
+
+#include <sys/types.h>
+#include <stdbool.h>
 
 #define USING_AGENTX_SUBAGENT_MODULE
 
@@ -42,7 +47,6 @@ int header_generic(struct variable *, oid *, size_t *, int,
 #undef FREE
 
 #include "list.h"
-#include "utils.h"
 
 #define SNMP_DEFAULT_NETWORK_SOCKET	"udp:localhost:705"
 
@@ -65,5 +69,8 @@ extern void snmp_register_mib(oid *myoid, size_t len,
 			      size_t varsize, size_t varlen);
 extern void snmp_unregister_mib(oid *myoid, size_t len);
 extern void snmp_agent_close(bool base_mib);
+#ifdef THREAD_DUMP
+extern void register_snmp_addresses(void);
+#endif
 
 #endif

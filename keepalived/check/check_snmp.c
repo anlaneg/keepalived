@@ -24,14 +24,12 @@
 
 #include <stdint.h>
 
-#include "check_data.h"
 #include "check_snmp.h"
-#include "list.h"
-#include "ipvswrapper.h"
 #include "ipwrapper.h"
 #include "global_data.h"
 #include "snmp.h"
-
+#include "utils.h"
+#include "parser.h"
 
 /* CHECK SNMP defines */
 #define CHECK_OID KEEPALIVED_OID, 3
@@ -106,12 +104,15 @@ enum check_snmp_virtualserver_magic {
 	CHECK_SNMP_VSHASHED,
 	CHECK_SNMP_VSSHFALLBACK,
 	CHECK_SNMP_VSSHPORT,
+	CHECK_SNMP_VSMHFALLBACK,
+	CHECK_SNMP_VSMHPORT,
 	CHECK_SNMP_VSSCHED3,
 	CHECK_SNMP_VSACTIONWHENDOWN,
 	CHECK_SNMP_VSRETRY,
 	CHECK_SNMP_VSDELAYBEFORERETRY,
 	CHECK_SNMP_VSWARMUP,
 	CHECK_SNMP_VSWEIGHT,
+	CHECK_SNMP_VSSMTPALERT,
 };
 
 enum check_snmp_realserver_magic {
@@ -161,7 +162,8 @@ enum check_snmp_realserver_magic {
 	CHECK_SNMP_RSRETRY,
 	CHECK_SNMP_RSDELAYBEFORERETRY,
 	CHECK_SNMP_RSWARMUP,
-	CHECK_SNMP_RSDELAYLOOP
+	CHECK_SNMP_RSDELAYLOOP,
+	CHECK_SNMP_RSSMTPALERT,
 };
 
 #define STATE_VSGM_FWMARK 1
@@ -209,9 +211,9 @@ do {									\
   }									\
 } while(0)
 
-
 /* Static return value */
 static longret_t long_ret;
+static char buf[MAXBUF];
 
 static u_char*
 check_snmp_vsgroup(struct variable *vp, oid *name, size_t *length,
@@ -459,6 +461,8 @@ check_snmp_virtualserver(struct variable *vp, oid *name, size_t *length,
 			long_ret.u = 11;
 		else if (!strcmp(v->sched, "ovf"))
 			long_ret.u = 12;
+		else if (!strcmp(v->sched, "mh"))
+			long_ret.u = 13;
 		else
 			long_ret.u = 99;
 		return (u_char*)&long_ret;
@@ -524,12 +528,14 @@ check_snmp_virtualserver(struct variable *vp, oid *name, size_t *length,
 		return (u_char*)&long_ret;
 	case CHECK_SNMP_VSQUORUMUP:
 		if (!v->notify_quorum_up) break;
-		*var_len = strlen(v->notify_quorum_up->name);
-		return (u_char*)v->notify_quorum_up->name;
+		cmd_str_r(v->notify_quorum_up, buf, sizeof(buf));
+		*var_len = strlen(buf);
+		return (u_char*)buf;
 	case CHECK_SNMP_VSQUORUMDOWN:
 		if (!v->notify_quorum_down) break;
-		*var_len = strlen(v->notify_quorum_down->name);
-		return (u_char*)v->notify_quorum_down->name;
+		cmd_str_r(v->notify_quorum_down, buf, sizeof(buf));
+		*var_len = strlen(buf);
+		return (u_char*)buf;
 	case CHECK_SNMP_VSHYSTERESIS:
 		long_ret.u = v->hysteresis;
 		return (u_char*)&long_ret;
@@ -660,6 +666,12 @@ check_snmp_virtualserver(struct variable *vp, oid *name, size_t *length,
 	case CHECK_SNMP_VSSHPORT:
 		long_ret.u = v->flags & IP_VS_SVC_F_SCHED_SH_PORT ? 1 : 2;
 		return (u_char*)&long_ret;
+	case CHECK_SNMP_VSMHFALLBACK:
+		long_ret.u = v->flags & IP_VS_SVC_F_SCHED_MH_FALLBACK ? 1 : 2;
+		return (u_char*)&long_ret;
+	case CHECK_SNMP_VSMHPORT:
+		long_ret.u = v->flags & IP_VS_SVC_F_SCHED_MH_PORT ? 1 : 2;
+		return (u_char*)&long_ret;
 	case CHECK_SNMP_VSSCHED3:
 		long_ret.u = v->flags & IP_VS_SVC_F_SCHED3 ? 1 : 2;
 		return (u_char*)&long_ret;
@@ -679,6 +691,9 @@ check_snmp_virtualserver(struct variable *vp, oid *name, size_t *length,
 	case CHECK_SNMP_VSWEIGHT:
 		long_ret.s = v->weight;
 		return (u_char*)&long_ret;
+	case CHECK_SNMP_VSSMTPALERT:
+		long_ret.u = v->smtp_alert?1:2;
+		return (u_char *)&long_ret;
 	default:
 		return NULL;
 	}
@@ -816,9 +831,10 @@ check_snmp_realserver(struct variable *vp, oid *name, size_t *length,
 			if ((result = snmp_oid_compare(current, 2, target,
 						       target_len)) < 0)
 				continue;
-			if ((result == 0) && !exact)
-				continue;
 			if (result == 0) {
+				if (!exact)
+					continue;
+
 				/* Got an exact match and asked for it */
 				be = e;
 				bvs = vs;
@@ -841,10 +857,12 @@ check_snmp_realserver(struct variable *vp, oid *name, size_t *length,
 	if (exact)
 		/* No exact match */
 		return NULL;
+
  real_be_found:
 	/* Let's use our best match */
 	memcpy(target, best, sizeof(oid) * 2);
 	*length = (unsigned)vp->namelen + 2;
+
  real_found:
 	switch (vp->magic) {
 	case CHECK_SNMP_RSTYPE:
@@ -900,13 +918,15 @@ check_snmp_realserver(struct variable *vp, oid *name, size_t *length,
 	case CHECK_SNMP_RSNOTIFYUP:
 		if (btype == STATE_RS_SORRY) break;
 		if (!be->notify_up) break;
-		*var_len = strlen(be->notify_up->name);
-		return (u_char*)be->notify_up->name;
+		cmd_str_r(be->notify_up, buf, sizeof(buf));
+		*var_len = strlen(buf);
+		return (u_char*)buf;
 	case CHECK_SNMP_RSNOTIFYDOWN:
 		if (btype == STATE_RS_SORRY) break;
 		if (!be->notify_down) break;
-		*var_len = strlen(be->notify_down->name);
-		return (u_char*)be->notify_down->name;
+		cmd_str_r(be->notify_down, buf, sizeof(buf));
+		*var_len = strlen(buf);
+		return (u_char*)buf;
 	case CHECK_SNMP_RSVIRTUALHOST:
 		if (!be->virtualhost) break;
 		*var_len = strlen(be->virtualhost);
@@ -1046,6 +1066,9 @@ check_snmp_realserver(struct variable *vp, oid *name, size_t *length,
 	case CHECK_SNMP_RSDELAYLOOP:
 		long_ret.u = be->delay_loop == ULONG_MAX ? 0 : be->delay_loop / TIMER_HZ;
 		return (u_char*)&long_ret;
+	case CHECK_SNMP_RSSMTPALERT:
+		long_ret.u = be->smtp_alert?1:2;
+		return (u_char *)&long_ret;
 	default:
 		return NULL;
 	}
@@ -1291,6 +1314,12 @@ static struct variable8 check_vars[] = {
 	 check_snmp_virtualserver, 3, {3, 1, 59}},
 	{CHECK_SNMP_VSWEIGHT, ASN_INTEGER, RONLY,
 	 check_snmp_virtualserver, 3, {3, 1, 60}},
+	{CHECK_SNMP_VSSMTPALERT, ASN_INTEGER, RONLY,
+	 check_snmp_virtualserver, 3, {3, 1, 61}},
+	{CHECK_SNMP_VSMHFALLBACK, ASN_INTEGER, RONLY,
+	 check_snmp_virtualserver, 3, {3, 1, 62}},
+	{CHECK_SNMP_VSMHPORT, ASN_INTEGER, RONLY,
+	 check_snmp_virtualserver, 3, {3, 1, 63}},
 
 	/* realServerTable */
 	{CHECK_SNMP_RSTYPE, ASN_INTEGER, RONLY,
@@ -1385,6 +1414,8 @@ static struct variable8 check_vars[] = {
 	 check_snmp_realserver, 3, {4, 1, 45}},
 	{CHECK_SNMP_RSDELAYLOOP, ASN_UNSIGNED, RONLY,
 	 check_snmp_realserver, 3, {4, 1, 46}},
+	{CHECK_SNMP_RSSMTPALERT, ASN_INTEGER, RONLY,
+	 check_snmp_realserver, 3, {4, 1, 47}},
 #ifdef _WITH_VRRP_
 	/* LVS sync daemon configuration */
 	{CHECK_SNMP_LVSSYNCDAEMONENABLED, ASN_INTEGER, RONLY,
@@ -1420,6 +1451,9 @@ static struct variable8 check_vars[] = {
 void
 check_snmp_agent_init(const char *snmp_socket)
 {
+	if (snmp_running)
+		return;
+
 	/* We handle the global oid if we are running SNMP */
 	snmp_agent_init(snmp_socket, true);
 	snmp_register_mib(check_oid, OID_LENGTH(check_oid), "Healthchecker",
@@ -1431,12 +1465,15 @@ check_snmp_agent_init(const char *snmp_socket)
 void
 check_snmp_agent_close()
 {
+	if (!snmp_running)
+		return;
+
 	snmp_unregister_mib(check_oid, OID_LENGTH(check_oid));
 	snmp_agent_close(true);
 }
 
 void
-check_snmp_rs_trap(real_server_t *rs, virtual_server_t *vs)
+check_snmp_rs_trap(real_server_t *rs, virtual_server_t *vs, bool stopping)
 {
 	element e;
 
@@ -1598,7 +1635,7 @@ check_snmp_rs_trap(real_server_t *rs, virtual_server_t *vs)
 				  (u_char *)&vsprotocol,
 				  sizeof(vsprotocol));
 	if (!rs) {
-		quorumstatus = vs->quorum_state_up ? 1 : 2;
+		quorumstatus = stopping ? 3 : vs->quorum_state_up ? 1 : 2;
 		snmp_varlist_add_variable(&notification_vars,
 					  quorumstatus_oid, quorumstatus_oid_len,
 					  ASN_INTEGER,
@@ -1634,7 +1671,7 @@ check_snmp_rs_trap(real_server_t *rs, virtual_server_t *vs)
 }
 
 void
-check_snmp_quorum_trap(virtual_server_t *vs)
+check_snmp_quorum_trap(virtual_server_t *vs, bool stopping)
 {
-	check_snmp_rs_trap(NULL, vs);
+	check_snmp_rs_trap(NULL, vs, stopping);
 }
