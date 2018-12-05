@@ -108,6 +108,7 @@
 
 /* global var */
 const char *version_string = VERSION_STRING;		/* keepalived version */
+//配置文件所在路径
 char *conf_file = KEEPALIVED_CONFIG_FILE;		/* Configuration file */
 int log_facility = LOG_DAEMON;				/* Optional logging facilities */
 bool reload;						/* Set during a reload */
@@ -858,6 +859,7 @@ update_core_dump_pattern(const char *pattern_str)
 		FREE_PTR(orig_core_dump_pattern);
 }
 
+//初始化进程core相关
 static void
 core_dump_init(void)
 {
@@ -867,9 +869,11 @@ core_dump_init(void)
 		/* If we set the core_pattern here, we will attempt to restore it when we
 		 * exit. This will be fine if it is a child of ours that core dumps,
 		 * but if we ourself core dump, then the core_pattern will not be restored */
+		//设置core　dump文件位置
 		update_core_dump_pattern(core_dump_pattern);
 	}
 
+	//设置ulimit,容许产生core文件
 	if (create_core_dump) {
 		rlim.rlim_cur = RLIM_INFINITY;
 		rlim.rlim_max = RLIM_INFINITY;
@@ -1442,6 +1446,7 @@ parse_cmdline(int argc, char **argv)
 			}
 			break;
 		case 'f':
+			//设置参数指定的配置文件
 			conf_file = optarg;
 			break;
 #if defined _WITH_VRRP_ && defined _WITH_LVS_
@@ -1710,6 +1715,7 @@ keepalived_main(int argc, char **argv)
 #endif
 
 	/* Handle any core file requirements */
+	//配置core文件相关
 	core_dump_init();
 
 	if (os_major) {
@@ -1741,6 +1747,7 @@ keepalived_main(int argc, char **argv)
 	   This means that if any config file names are not
 	   absolute file names, the behaviour will be different
 	   depending on whether we forked or not. */
+	//配置文件检查失败，则直接退出（并没有检查配置文件需要为绝对路径）
 	if (!check_conf_file(conf_file)) {
 		if (__test_bit(CONFIG_TEST_BIT, &debug))
 			config_test_exit();
@@ -1751,6 +1758,7 @@ keepalived_main(int argc, char **argv)
 
 	global_data = alloc_global_data();
 
+	//读取配置文件
 	read_config_file();
 
 	init_global_data(global_data, NULL);

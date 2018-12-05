@@ -40,8 +40,8 @@ struct _list {
 	struct _element *head;
 	struct _element *tail;
 	unsigned int count;
-	void (*free) (void *);
-	void (*dump) (FILE *, void *);
+	void (*free) (void *);//节点free函数
+	void (*dump) (FILE *, void *);//节点dump函数
 };
 
 /* utility macro */

@@ -179,6 +179,7 @@ dns_recv_thread(thread_t * thread)
 	dns_check_t *dns_check = CHECKER_ARG(checker);
 
 	if (thread->type == THREAD_READ_TIMEOUT) {
+		//读取超时
 		dns_final(thread, 1, "read timeout from socket");
 		return 0;
 	}

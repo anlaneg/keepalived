@@ -146,6 +146,7 @@ alloc_email(char *addr)
 }
 
 /* data facility functions */
+//申请全局data
 data_t *
 alloc_global_data(void)
 {

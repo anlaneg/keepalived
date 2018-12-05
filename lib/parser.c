@@ -78,9 +78,9 @@ const char *WHITE_SPACE = WHITE_SPACE_STR;
 
 /* local vars */
 static vector_t *current_keywords;
-static FILE *current_stream;
-static const char *current_file_name;
-static size_t current_file_line_no;
+static FILE *current_stream;//记录当前正在解析的配置文件file
+static const char *current_file_name;//记录正在解析的配置文件名称（如果只有一个配置文件，则不赋值）
+static size_t current_file_line_no;//记录正在解析的配置文件行号
 static int sublevel = 0;
 static int skip_sublevel = 0;
 static list multiline_stack;
@@ -684,7 +684,7 @@ err_exit:
 	return NULL;
 }
 
-//传入的字符串是一组token流，解析这组token,记录在vector中
+//传入的字符串是一组token流，解析这组token,记录在vector中，并返回
 vector_t *
 alloc_strvec_r(char *string)
 {
@@ -901,6 +901,7 @@ process_stream(vector_t *keywords_vec, int need_bob)
 	buf = MALLOC(MAXBUF);
 	//读一行数据，展开$指明的变量，处理include指令
 	while (read_line(buf, MAXBUF)) {
+		//将读取到的数据，打散成token数组
 		strvec = alloc_strvec(buf);
 
 		if (!strvec)
@@ -1053,6 +1054,7 @@ read_conf_file(const char *conf_file)
 	unsigned num_matches = 0;
 
 	globbuf.gl_offs = 0;
+	//首先按conf_file通配配置文件
 	res = glob(conf_file, GLOB_MARK
 #if HAVE_DECL_GLOB_BRACE
 					| GLOB_BRACE
@@ -1060,6 +1062,7 @@ read_conf_file(const char *conf_file)
 						    , NULL, &globbuf);
 
 	if (res) {
+		//无配置文件被匹配，返回True
 		if (res == GLOB_NOMATCH)
 			log_message(LOG_INFO, "No config files matched '%s'.", conf_file);
 		else
@@ -1067,7 +1070,7 @@ read_conf_file(const char *conf_file)
 		return true;
 	}
 
-	//遍历通配的文件
+	//遍历通配的所有文件
 	for (i = 0; i < globbuf.gl_pathc; i++) {
 		//跳过目录
 		if (globbuf.gl_pathv[i][strlen(globbuf.gl_pathv[i])-1] == '/') {
@@ -1097,14 +1100,17 @@ read_conf_file(const char *conf_file)
 		//匹配数加1
 		num_matches++;
 
-		current_stream = stream;
+		current_stream = stream;//当前stream
 
 		/* We only want to report the file name if there is more than one file used */
 		if (current_file_name || globbuf.gl_pathc > 1)
-			current_file_name = globbuf.gl_pathv[i];
-		current_file_line_no = 0;
+			current_file_name = globbuf.gl_pathv[i];//当前配置文件名称
+		current_file_line_no = 0;//当前配置文件行号
 
+		//记录旧的工作目录，以便一会切回来
 		int curdir_fd = -1;
+
+		//如果配置文件路径中含'/'符，则切换目录至配置文件所在目录（目的是什么，为命令解析服务？）
 		if (strchr(globbuf.gl_pathv[i], '/')) {
 			/* If the filename contains a directory element, change to that directory.
 			   The man page open(2) states that fchdir() didn't support O_PATH until Linux 3.5,
@@ -1118,17 +1124,20 @@ read_conf_file(const char *conf_file)
 
 			char *confpath = strdup(globbuf.gl_pathv[i]);
 			dirname(confpath);
-			if (chdir(confpath) < 0)//改变工作目录到配置文件所在的目录
+			//改变工作目录到配置文件所在的目录
+			if (chdir(confpath) < 0)
 				log_message(LOG_INFO, "chdir(%s) error (%s)", confpath, strerror(errno));
 			free(confpath);
 		}
 
+		//配置文件解析
 		process_stream(current_keywords, 0);
 		fclose(stream);
 
 		free_list(&seq_list);
 
 		/* If we changed directory, restore the previous directory */
+		//切回到之前的工作目录
 		if (curdir_fd != -1) {
 			if ((res = fchdir(curdir_fd)))
 				log_message(LOG_INFO, "Failed to restore previous directory after include");
@@ -1156,6 +1165,7 @@ bool check_conf_file(const char *conf_file)
 	unsigned num_matches = 0;
 
 	globbuf.gl_offs = 0;
+	//针对conf_file执行路径名称模式匹配（与shell匹配方式相同），匹配结果存储在globbuf中
 	res = glob(conf_file, GLOB_MARK
 #if HAVE_DECL_GLOB_BRACE
 					| GLOB_BRACE
@@ -1166,12 +1176,15 @@ bool check_conf_file(const char *conf_file)
 		return false;
 	}
 
+	//遍历所有匹配到的配置文件
 	for (i = 0; i < globbuf.gl_pathc; i++) {
+		//跳过匹配到的所有目录
 		if (globbuf.gl_pathv[i][strlen(globbuf.gl_pathv[i])-1] == '/') {
 			/* This is a directory - so skip */
 			continue;
 		}
 
+		//遇到不能读取的配置文件直接跳出（这里应改为continue才对吧？）
 		if (access(globbuf.gl_pathv[i], R_OK)) {
 			log_message(LOG_INFO, "Unable to read configuration file %s", globbuf.gl_pathv[i]);
 			ret = false;
@@ -1179,6 +1192,7 @@ bool check_conf_file(const char *conf_file)
 		}
 
 		/* Make sure that the file is a regular file, and not for example a directory or executable */
+		//取stat失败，或遇到非规则文件，或包含执行权限，均直接跳出，并报错
 		if (stat(globbuf.gl_pathv[i], &stb) ||
 		    !S_ISREG(stb.st_mode) ||
 		     (stb.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
@@ -1192,8 +1206,10 @@ bool check_conf_file(const char *conf_file)
 
 	if (ret) {
 		if (num_matches > 1)
+			//如果存在多个配置文件，则告警
 			report_config_error(CONFIG_MULTIPLE_FILES, "WARNING, more than one file matches configuration file %s, using %s", conf_file, globbuf.gl_pathv[0]);
 		else if (num_matches == 0) {
+			//不存在配置文件，报错
 			report_config_error(CONFIG_FILE_NOT_FOUND, "Unable to find configuration file %s", conf_file);
 			ret = false;
 		}
@@ -1676,6 +1692,7 @@ read_line(char *buf, size_t size)
 		}
 		else {
 retry:
+			//自当前配置文件中读取一行数据
 			if (!fgets(buf, (int)size, current_stream))
 			{
 				eof = true;
@@ -1686,7 +1703,7 @@ retry:
 			/* Check if we have read the end of a line */
 			len = strlen(buf);
 			if (buf[0] && buf[len-1] == '\n')
-				current_file_line_no++;
+				current_file_line_no++;//增加行号
 
 			/* Remove end of line chars */
 			while (len && (buf[len-1] == '\n' || buf[len-1] == '\r'))

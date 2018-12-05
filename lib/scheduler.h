@@ -80,6 +80,7 @@ enum thread_flags {
 typedef struct _thread {
 	unsigned long id;
 	thread_type_t type;		/* thread type */
+	//所属的master
 	struct _thread_master *master;	/* pointer to the struct thread_master. */
 	int (*func)(struct _thread *);	/* event function */
 	void *arg;			/* event argument */
@@ -115,29 +116,30 @@ typedef struct _thread_event {
 
 /* Master of the threads. */
 typedef struct _thread_master {
-	rb_root_cached_t	read;//THREAD_READ类型的存在此链上
-	rb_root_cached_t	write;//THREAD_WRITE类型的存在此链上
+	rb_root_cached_t	read;//读事件存于此链上
+	rb_root_cached_t	write;//WRITE类型的存在此链上
 	rb_root_cached_t	timer;//用于串连timer
 	rb_root_cached_t	child;//用于串连子线程 
-	list_head_t		event;//用于串连定义的线程
+	list_head_t		event;//用于串连自定义的事件
 #ifdef USE_SIGNAL_THREADS
 	list_head_t 		signal;
 #endif
-	list_head_t		ready;//用于挂接write,timer,child,read上可读写的fd或者超时的fd
-	list_head_t		unuse;//空闲的thread_t变量
+	list_head_t		ready;//用于挂接write,timer,child,read上可读写的fd或者超时的fd，可以处理回调的
+	list_head_t		unuse;//空闲的thread_t变量(用于thread复用）
 
 	/* child process related */
-	rb_root_t		child_pid;
+	rb_root_t		child_pid;//用于挂接所有子进程(按pid排序）
 
 	/* epoll related */
 	rb_root_t		io_events;
-	struct epoll_event	*epoll_events;
+	struct epoll_event	*epoll_events;//记录收到的epoll事件
 	thread_event_t		*current_event;
 	unsigned int		epoll_size;
-	unsigned int		epoll_count;
-	int			epoll_fd;
+	unsigned int		epoll_count;//记录收到的epoll事件数目
+	int			epoll_fd;//epoll接口对外的fd
 
 	/* timer related */
+	//提供timer能力
 	int			timer_fd;
 	thread_t		*timer_thread;
 
@@ -153,7 +155,7 @@ typedef struct _thread_master {
 
 	/* Local data */
 	unsigned long		alloc;
-	unsigned long		id;
+	unsigned long		id;//为每个thread分配id
 	bool			shutdown_timer_running;
 } thread_master_t;
 

@@ -106,6 +106,7 @@ update_log_file_perms(mode_t umask_bits)
 }
 #endif
 
+//日志输出
 void
 vlog_message(const int facility, const char* format, va_list args)
 {
@@ -140,10 +141,12 @@ vlog_message(const int facility, const char* format, va_list args)
 		char timestamp[64];
 		strftime(timestamp, sizeof(timestamp), "%c", &tm);
 
+		//输出至控制台
 		if (log_console && __test_bit(DONT_FORK_BIT, &debug))
 			fprintf(stderr, "%s: %s\n", timestamp, buf);
 #ifdef ENABLE_LOG_TO_FILE
 		if (log_file) {
+			//输出至日志文件
 			fprintf(log_file, "%s: %s\n", timestamp, buf);
 			if (always_flush_log_file)
 				fflush(log_file);
@@ -151,6 +154,7 @@ vlog_message(const int facility, const char* format, va_list args)
 #endif
 	}
 
+	//输出至syslog
 	if (!__test_bit(NO_SYSLOG_BIT, &debug))
 #if HAVE_VSYSLOG
 		vsyslog(facility, format, args);
@@ -159,6 +163,7 @@ vlog_message(const int facility, const char* format, va_list args)
 #endif
 }
 
+//日志输出
 void
 log_message(const int facility, const char *format, ...)
 {
@@ -169,6 +174,7 @@ log_message(const int facility, const char *format, ...)
 	va_end(args);
 }
 
+//配置文件输出
 void
 conf_write(FILE *fp, const char *format, ...)
 {
@@ -176,10 +182,12 @@ conf_write(FILE *fp, const char *format, ...)
 
 	va_start(args, format);
 	if (fp) {
+		//文件输出
 		vfprintf(fp, format, args);
 		fprintf(fp, "\n");
 	}
 	else
+		//未指定fp时，输出至syslog
 		vlog_message(LOG_INFO, format, args);
 
 	va_end(args);

@@ -463,6 +463,7 @@ start_vrrp(data_t *old_global_data)
 		return;
 	}
 
+	//解析vrrp配置文件
 	init_data(conf_file, vrrp_init_keywords);
 
 	if (non_existent_interface_specified) {
@@ -646,6 +647,7 @@ send_reload_advert_thread(thread_t *thread)
 	return 0;
 }
 
+//处理SIGHUP信号
 static void
 sigreload_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
@@ -676,6 +678,7 @@ sigreload_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 		thread_add_event(master, reload_vrrp_thread, NULL, 0);
 }
 
+//处理usr1信号
 static void
 sigusr1_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
@@ -684,6 +687,7 @@ sigusr1_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 	thread_add_event(master, print_vrrp_data, NULL, 0);
 }
 
+//处理usr2信号
 static void
 sigusr2_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
@@ -920,6 +924,7 @@ start_vrrp_child(void)
 	}
 
 	//子进程自此开始运行
+	//配置子进程，使得如果父进程退出，子进程将收到SIGTERM信号
 	prctl(PR_SET_PDEATHSIG, SIGTERM);
 
 #ifdef _WITH_PERF_
@@ -1003,10 +1008,12 @@ start_vrrp_child(void)
 
 #ifndef _DEBUG_
 	/* Signal handling initialization */
+	//子进程信号注册
 	vrrp_signal_init();
 #endif
 
 	/* Start VRRP daemon */
+	//vrrp 启动
 	start_vrrp(NULL);
 
 #ifdef _DEBUG_
@@ -1022,6 +1029,7 @@ start_vrrp_child(void)
 		run_perf("vrrp", global_data->network_namespace, global_data->instance_name);
 #endif
 	/* Launch the scheduling I/O multiplexer */
+	//进入io复用，处理event
 	launch_thread_scheduler(master);
 
 #ifdef THREAD_DUMP

@@ -210,9 +210,11 @@ set_extra_threads_debug(void (*func)(void))
 static int
 thread_move_ready(thread_master_t *m, rb_root_cached_t *root, thread_t *thread, int type)
 {
+	//将thread自root中移除
 	rb_erase_cached(&thread->n, root);
+	//初始化next指针，并将thread加入到ready链上
 	INIT_LIST_HEAD(&thread->next);
-	list_add_tail(&thread->next, &m->ready);
+	list_add_tail(&thread->next, &m->ready);//将thread加入到ready链上
 	if (thread->type != THREAD_TIMER_SHUTDOWN)
 		thread->type = type;
 	return 0;
@@ -225,6 +227,7 @@ thread_rb_move_ready(thread_master_t *m, rb_root_cached_t *root, int type)
 	thread_t *thread, *thread_tmp;
 
 	rb_for_each_entry_safe_cached(thread, thread_tmp, root, n) {
+		//采用time_now检查哪些event过期，将过期的统一移动到ready链上
 		if (thread->sands.tv_sec == TIMER_DISABLED || timercmp(&time_now, &thread->sands, <))
 			break;
 
@@ -237,6 +240,8 @@ thread_rb_move_ready(thread_master_t *m, rb_root_cached_t *root, int type)
 }
 
 /* Update timer value */
+//检查root的超时时间，如果其小于timer_min，则更新timer_min
+//（按thread_add_xxx_sands函数示，root是按超时间自小向大排列的）
 static void
 thread_update_timer(rb_root_cached_t *root, timeval_t *timer_min)
 {
@@ -258,6 +263,7 @@ thread_update_timer(rb_root_cached_t *root, timeval_t *timer_min)
 }
 
 /* Compute the wait timer. Take care of timeouted fd */
+//计算timer_fd的等待时间
 static void
 thread_set_timer(thread_master_t *m)
 {
@@ -265,6 +271,8 @@ thread_set_timer(thread_master_t *m)
 	struct itimerspec its;
 
 	/* Prepare timer */
+	//收集m->timer,m->write,m->read,m->child的最小超时时间，将其
+	//做为timer_wait
 	timerclear(&timer_wait);
 	thread_update_timer(&m->timer, &timer_wait);
 	thread_update_timer(&m->write, &timer_wait);
@@ -283,11 +291,13 @@ thread_set_timer(thread_master_t *m)
 			timerclear(&timer_wait);
 		}
 	} else {
+		//未发现最小的超时时间
 		/* set timer to a VERY long time */
 		timer_wait.tv_sec = LONG_MAX;
 		timer_wait.tv_usec = 0;
 	}
 
+	//定义定时器超时相对时间为timer_wait
 	its.it_value.tv_sec = timer_wait.tv_sec;
 	if (!timerisset(&timer_wait)) {
 		/* We could try to avoid doing the epoll_wait since
@@ -299,8 +309,10 @@ thread_set_timer(thread_master_t *m)
 		its.it_value.tv_nsec = timer_wait.tv_usec * 1000;
 
 	/* We don't want periodic timer expiry */
+	//定义间隔为０，及设置为单次定时器
 	its.it_interval.tv_sec = its.it_interval.tv_nsec = 0;
 
+	//设置timer_fd的超时时间及间隔（flgas=0表示，采用相对时间定义超时时间）
 	timerfd_settime(m->timer_fd, 0, &its, NULL);
 
 #ifdef _EPOLL_DEBUG_
@@ -309,6 +321,8 @@ thread_set_timer(thread_master_t *m)
 #endif
 }
 
+//当timer_fd到期后，会触发timer_fd的可读事件
+//，本函数将被回调，通过调用read,使得timer解除通知
 static int
 thread_timerfd_handler(thread_t *thread)
 {
@@ -321,12 +335,15 @@ thread_timerfd_handler(thread_t *thread)
 		log_message(LOG_ERR, "scheduler: Error reading on timerfd fd:%d (%m)", m->timer_fd);
 
 	/* Read, Write, Timer, Child thread. */
+	//检查m->read,m->write,m->timer,m->child链上的所有事件
+	//利用当前时间timer_now,将过期时间小于timer_now的event全部移动到ready链上，并置相应的type
 	thread_rb_move_ready(m, &m->read, THREAD_READ_TIMEOUT);
 	thread_rb_move_ready(m, &m->write, THREAD_WRITE_TIMEOUT);
 	thread_rb_move_ready(m, &m->timer, THREAD_READY);
 	thread_rb_move_ready(m, &m->child, THREAD_CHILD_TIMEOUT);
 
 	/* Register next timerfd thread */
+	//注册下一次回调，超时时间暂设置为never(由事件loop中视read,write,timer,child情况进行更改）
 	m->timer_thread = thread_add_read(m, thread_timerfd_handler, NULL, m->timer_fd, TIMER_NEVER);
 
 	return 0;
@@ -556,6 +573,7 @@ thread_event_get(thread_master_t *m, int fd)
 	return rb_search(&m->io_events, &event, n, thread_event_cmp);
 }
 
+//添加或者修改thread事件
 static int
 thread_event_set(thread_t *thread)
 {
@@ -586,6 +604,7 @@ thread_event_set(thread_t *thread)
 	return 0;
 }
 
+//删除thread->event事件
 static int
 thread_event_cancel(thread_t *thread)
 {
@@ -597,6 +616,7 @@ thread_event_cancel(thread_t *thread)
 		return -1;
 	}
 
+	//知会epoll,不再关心此事件
 	if (m->epoll_fd != -1 &&
 	    epoll_ctl(m->epoll_fd, EPOLL_CTL_DEL, event->fd, NULL) < 0 &&
 	    errno != EBADF) {
@@ -642,7 +662,7 @@ thread_event_del(thread_t *thread, unsigned flag)
 }
 
 /* Make thread master. */
-//创建线程master
+//创建thread_master
 thread_master_t *
 thread_make_master(void)
 {
@@ -681,6 +701,7 @@ thread_make_master(void)
 
 
 	/* Register timerfd thread */
+	//使用单调时间（不容许变更）
 	new->timer_fd = timerfd_create(CLOCK_MONOTONIC,
 #ifdef TFD_NONBLOCK				/* Since Linux 2.6.27 */
 						        TFD_NONBLOCK | TFD_CLOEXEC
@@ -704,6 +725,7 @@ thread_make_master(void)
 
 	new->signal_fd = signal_handler_init();
 
+	//创建timer_thread,并注册timer_fd的工作为，检查当前时间将过期的event移动到reay链上
 	new->timer_thread = thread_add_read(new, thread_timerfd_handler, NULL, new->timer_fd, TIMER_NEVER);
 
 	add_signal_read_thread(new);
@@ -815,7 +837,7 @@ thread_clean_unuse(thread_master_t * m)
 }
 
 /* Move thread to unuse list. */
-//将此线程加入到unuse中
+//将此thread加入到unuse中
 static void
 thread_add_unuse(thread_master_t *m, thread_t *thread)
 {
@@ -936,6 +958,7 @@ thread_get_id(thread_master_t *m)
 }
 
 /* Make new thread. */
+//生成一个新的thread(或者复用旧的thread内存)
 static thread_t *
 thread_new(thread_master_t *m)
 {
@@ -954,6 +977,7 @@ thread_new(thread_master_t *m)
 }
 
 /* Add new read thread. */
+//添加读事件（支持读超时)
 thread_t *
 thread_add_read_sands(thread_master_t *m, int (*func) (thread_t *), void *arg, int fd, timeval_t *sands)
 {
@@ -1002,11 +1026,13 @@ thread_add_read_sands(thread_master_t *m, int (*func) (thread_t *), void *arg, i
 	thread->sands = *sands;
 
 	/* Sort the thread. */
+	//将此thread添加到m->read链上（添加时，按thread->sands时间自小向大排列）
 	rb_insert_sort_cached(&m->read, thread, n, thread_timer_cmp);
 
 	return thread;
 }
 
+//添加超时读事件
 thread_t *
 thread_add_read(thread_master_t *m, int (*func) (thread_t *), void *arg, int fd, unsigned long timer)
 {
@@ -1020,6 +1046,7 @@ thread_add_read(thread_master_t *m, int (*func) (thread_t *), void *arg, int fd,
 		sands = timer_add_long(time_now, timer);
 	}
 
+	//添加超时读
 	return thread_add_read_sands(m, func, arg, fd, &sands);
 }
 
@@ -1078,7 +1105,7 @@ thread_requeue_read(thread_master_t *m, int fd, const timeval_t *sands)
 }
 
 /* Add new write thread. */
-//创建写线程
+//添加写事件（支持写超时）
 thread_t *
 thread_add_write(thread_master_t *m, int (*func) (thread_t *), void *arg, int fd, unsigned long timer)
 {
@@ -1164,7 +1191,7 @@ thread_close_fd(thread_t *thread)
 }
 
 /* Add timer event thread. */
-//向线程列表中加入timer
+//添加timer事件
 thread_t *
 thread_add_timer(thread_master_t *m, int (*func) (thread_t *), void *arg, unsigned long timer)
 {
@@ -1183,6 +1210,7 @@ thread_add_timer(thread_master_t *m, int (*func) (thread_t *), void *arg, unsign
 		thread->sands.tv_sec = TIMER_DISABLED;
 	else {
 		set_time_now();
+		//设置到期时间
 		thread->sands = timer_add_long(time_now, timer);
 	}
 
@@ -1224,7 +1252,7 @@ thread_add_timer_shutdown(thread_master_t *m, int(*func)(thread_t *), void *arg,
 }
 
 /* Add a child thread. */
-//创建并注册子线程
+//这种类型的event是什么意思？？？？？
 thread_t *
 thread_add_child(thread_master_t * m, int (*func) (thread_t *), void * arg, pid_t pid, unsigned long timer)
 {
@@ -1271,7 +1299,7 @@ thread_children_reschedule(thread_master_t *m, int (*func)(thread_t *), unsigned
 }
 
 /* Add simple event thread. */
-//创建事件线程
+//添加紧急事件（优先级高于其它thread)
 thread_t *
 thread_add_event(thread_master_t * m, int (*func) (thread_t *), void *arg, int val)
 {
@@ -1534,6 +1562,7 @@ snmp_epoll_info(thread_master_t *m)
 #endif
 
 /* Fetch next ready thread. */
+//此函数实际上是一个event(优先级最高）,fd事件分发函数，监听各fd上的事件，将ready的一个返回
 static list_head_t *
 thread_fetch_next_queue(thread_master_t *m)
 {
@@ -1545,10 +1574,12 @@ thread_fetch_next_queue(thread_master_t *m)
 	assert(m != NULL);
 
 	/* If there is event process it first. */
+	//优先处理event列表
 	if (m->event.next != &m->event)
 		return &m->event;
 
 	/* If there are ready threads process them */
+	//已有ready事件，不需要等待，直接返回
 	if (m->ready.next != &m->ready)
 		return &m->ready;
 
@@ -1559,6 +1590,7 @@ thread_fetch_next_queue(thread_master_t *m)
 #endif
 
 		/* Calculate and set wait timer. Take care of timeouted fd.  */
+		//设置timer_fd的等待时间，在此等待时间后timer_fd一定会被触发
 		thread_set_timer(m);
 
 #ifdef _VRRP_FD_DEBUG_
@@ -1577,6 +1609,7 @@ thread_fetch_next_queue(thread_master_t *m)
 #endif
 
 		/* Call epoll function. */
+		//死等待epoll事件发生（通过epoll_ctl添加，删除关心的fd)
 		ret = epoll_wait(m->epoll_fd, m->epoll_events, m->epoll_count, -1);
 		sav_errno = errno;
 
@@ -1590,8 +1623,10 @@ thread_fetch_next_queue(thread_master_t *m)
 #endif
 
 		if (ret < 0) {
+			//epoll_wait返回失败
+
 			if (sav_errno == EINTR)
-				continue;
+				continue;//被信号中断，重新wait
 
 			/* Real error. */
 			if (sav_errno != last_epoll_errno) {
@@ -1608,6 +1643,7 @@ thread_fetch_next_queue(thread_master_t *m)
 		}
 
 		/* Handle epoll events */
+		//遍历收到的所有事件，并按状态将其划分到m->ready链上
 		for (i = 0; i < ret; i++) {
 			struct epoll_event *ep_ev;
 			thread_event_t *ev;
@@ -1616,8 +1652,10 @@ thread_fetch_next_queue(thread_master_t *m)
 			ev = ep_ev->data.ptr;
 
 			/* Error */
+			//fd错误情况
 // TODO - no thread processing function handles THREAD_READ_ERROR/THREAD_WRITE_ERROR yet
 			if (ep_ev->events & (EPOLLHUP | EPOLLERR | EPOLLRDHUP)) {
+				//fd收到出错信息，如果将ev自m->read/m->write链上移除，并移动到m->ready链上
 				if (ev->read) {
 					thread_move_ready(m, &m->read, ev->read, THREAD_READ_ERROR);
 					ev->read = NULL;
@@ -1632,23 +1670,28 @@ thread_fetch_next_queue(thread_master_t *m)
 			}
 
 			/* READ */
+			//收到可读事件
 			if (ep_ev->events & EPOLLIN) {
 				if (!ev->read) {
+					//收到读事件，但ev并不在read中，告警，并忽略
 					log_message(LOG_INFO, "scheduler: No read thread bound on fd:%d (fl:0x%.4X)"
 						      , ev->fd, ep_ev->events);
 					continue;
 				}
+				//将ev自m->read链上移除，并移动到m->ready链上
 				thread_move_ready(m, &m->read, ev->read, THREAD_READY_FD);
 				ev->read = NULL;
 			}
 
 			/* WRITE */
+			//收到可写事件
 			if (ep_ev->events & EPOLLOUT) {
 				if (!ev->write) {
 					log_message(LOG_INFO, "scheduler: No write thread bound on fd:%d (fl:0x%.4X)"
 						      , ev->fd, ep_ev->events);
 					continue;
 				}
+				//将ev自m->write链上移除，移动到m->ready链上
 				thread_move_ready(m, &m->write, ev->write, THREAD_READY_FD);
 				ev->write = NULL;
 			}
@@ -1666,6 +1709,7 @@ thread_fetch_next_queue(thread_master_t *m)
 		set_time_now();
 
 		/* If there is a ready thread, return it. */
+		//如果ready链上有元素，则返回首个元素
 		if (m->ready.next != &m->ready)
 			return &m->ready;
 	} while (true);
@@ -1685,7 +1729,8 @@ thread_call(thread_t * thread)
 	(*thread->func) (thread);
 }
 
-//单线程事件模形，用于找到可调度的thread并回调它
+//keepalived中的术语threads实际上为libevent中的event
+//提取一个event并处理
 void
 process_threads(thread_master_t *m)
 {
@@ -1697,7 +1742,7 @@ process_threads(thread_master_t *m)
 	 * Processing the master thread queues,
 	 * return and execute one ready thread.
 	 */
-	//提取一个thread
+	//提取一个事件
 	while ((thread_list = thread_fetch_next_queue(m))) {
 		/* Run until error, used for debuging only */
 #if defined _DEBUG_ && defined _MEM_CHECK_
@@ -1717,7 +1762,9 @@ process_threads(thread_master_t *m)
 		/* If we are shutting down, only process relevant thread types.
 		 * We only want timer and signal fd, and don't want inotify, vrrp socket,
 		 * snmp_read, bfd_receiver, bfd pipe in vrrp/check, dbus pipe or netlink fds. */
+		//取首个事件
 		thread = thread_trim_head(thread_list);
+		//按上面注释，关闭过程中仅处理指定类型的event,如果没有正在关闭，则所有event均执行
 		if (!shutting_down ||
 		    (thread->type == THREAD_READY_FD &&
 		     (thread->u.fd == m->timer_fd ||
@@ -1731,6 +1778,7 @@ process_threads(thread_master_t *m)
 		    thread->type == THREAD_CHILD_TERMINATED ||
 		    thread->type == THREAD_TIMER_SHUTDOWN ||
 		    thread->type == THREAD_TERMINATE) {
+			//触发其事件回调
 			if (thread->func)
 				thread_call(thread);
 
@@ -1738,10 +1786,12 @@ process_threads(thread_master_t *m)
 				shutting_down = true;
 		}
 
+		//event对应资源回收（已执行的event,及不需要执行的event)
 		m->current_event = (thread->type == THREAD_READY_FD) ? thread->event : NULL;
 		thread_type = thread->type;
 		thread_add_unuse(master, thread);
 
+		//检查是否需要退出事件处理循环
 		/* If we are shutting down, and the shutdown timer is not running and
 		 * all children have terminated, then we can terminate */
 		if (shutting_down && !m->shutdown_timer_running && !m->child.rb_root.rb_node)
@@ -1766,6 +1816,7 @@ process_child_termination(pid_t pid, int status)
 		permanent_vrrp_checker_error = report_child_status(status, pid, NULL);
 #endif
 
+	//通过pid查找对应thread
 	thread = rb_search(&master->child_pid, &th, rb_data, thread_child_pid_cmp);
 
 #ifdef _EPOLL_DEBUG_
@@ -1776,6 +1827,7 @@ process_child_termination(pid_t pid, int status)
 	if (!thread)
 		return;
 
+	//将thread自child_pid上移除
 	rb_erase(&thread->rb_data, &master->child_pid);
 
 	thread->u.c.status = status;
@@ -1799,15 +1851,20 @@ thread_child_handler(__attribute__((unused)) void *v, __attribute__((unused)) in
 	pid_t pid;
 	int status;
 
+	//尝试一次进程wait,如果恰好有进程退出，则回归，否则直接返回
 	while ((pid = waitpid(-1, &status, WNOHANG))) {
 		if (pid == -1) {
 			if (errno == ECHILD)
-				return;
+				return;//没有任何需要等待的子进程了，退出此函数
+
+			//等待出错，进程退出
 			log_message(LOG_DEBUG, "waitpid error %d: %s", errno, strerror(errno));
 			assert(0);
 
 			return;
 		}
+
+		//子进程pid退出，处理后继续等待
 		process_child_termination(pid, status);
 	}
 }
@@ -1815,6 +1872,7 @@ thread_child_handler(__attribute__((unused)) void *v, __attribute__((unused)) in
 void
 thread_add_base_threads(thread_master_t *m)
 {
+	//创建timer_thread,并注册timer_fd的工作为，检查当前时间将过期的event移动到reay链上
 	m->timer_thread = thread_add_read(m, thread_timerfd_handler, NULL, m->timer_fd, TIMER_NEVER);
 	add_signal_read_thread(m);
 #ifdef _WITH_SNMP_
@@ -1827,8 +1885,10 @@ void
 launch_thread_scheduler(thread_master_t *m)
 {
 // TODO - do this somewhere better
+	//注册进程退出信号（完成子进程退出处理）
 	signal_set(SIGCHLD, thread_child_handler, m);
 
+	//进行事件处理循环，直要关闭
 	process_threads(m);
 }
 
