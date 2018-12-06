@@ -1915,6 +1915,7 @@ keepalived_main(int argc, char **argv)
 	signal_init();
 
 	/* Init daemon */
+	//启动keepalived
 	if (!start_keepalived())
 		log_message(LOG_INFO, "Warning - keepalived has no configuration to run");
 

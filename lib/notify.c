@@ -447,6 +447,7 @@ script_killall(thread_master_t *m, int signo, bool requeue)
 
 	p_pgid = getpgid(0);
 
+	//通过信号signo通知所有子进程
 	rb_for_each_entry_cached(thread, &m->child, n) {
 		c_pgid = getpgid(thread->u.c.pid);
 		if (c_pgid != p_pgid)

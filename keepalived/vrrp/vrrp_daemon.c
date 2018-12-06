@@ -401,11 +401,13 @@ vrrp_terminate_phase1(bool schedule_next_thread)
 			thread_add_timer_shutdown(master, vrrp_shutdown_backstop_thread, NULL, TIMER_HZ);
 		}
 		else
+			//添加NULL的terminate事件
 			thread_add_terminate_event(master);
 	}
 }
 
 #ifndef _DEBUG_
+//处理terminate的第一阶段
 static int
 start_vrrp_termination_thread(__attribute__((unused)) thread_t * thread)
 {
@@ -442,6 +444,7 @@ start_vrrp(data_t *old_global_data)
 	clear_summary_flags();
 
 	/* Initialize sub-system */
+	//监听kernel netlink广播消息，获取接口，地址信息
 	if (!__test_bit(CONFIG_TEST_BIT, &debug))
 		kernel_netlink_init();
 
@@ -710,6 +713,7 @@ sigjson_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 static void
 sigend_vrrp(__attribute__((unused)) void *v, __attribute__((unused)) int sig)
 {
+	//添加start_vrrp_termination_thread 紧急event
 	if (master)
 		thread_add_start_terminate_event(master, start_vrrp_termination_thread);
 }
@@ -720,7 +724,7 @@ vrrp_signal_init(void)
 {
 	signal_set(SIGHUP, sigreload_vrrp, NULL);
 	signal_set(SIGINT, sigend_vrrp, NULL);
-	signal_set(SIGTERM, sigend_vrrp, NULL);
+	signal_set(SIGTERM, sigend_vrrp, NULL);//收到sigterm信号处理
 	signal_set(SIGUSR1, sigusr1_vrrp, NULL);
 	signal_set(SIGUSR2, sigusr2_vrrp, NULL);
 #ifdef _WITH_JSON_
@@ -911,7 +915,7 @@ start_vrrp_child(void)
 			       , strerror(errno));
 		return -1;
 	} else if (pid) {
-		//使父进程注册vrrp子线程
+		//使父进程关注子进程的退出事件（要么respawn,要么给自身发送sigterm信号）
 		vrrp_child = pid;
 		log_message(LOG_INFO, "Starting VRRP child process, pid=%d"
 			       , pid);

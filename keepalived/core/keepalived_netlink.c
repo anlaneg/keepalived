@@ -485,6 +485,7 @@ rule_is_ours(struct fib_rule_hdr* frh, struct rtattr *tb[FRA_MAX + 1], vrrp_t **
 #endif
 
 /* Update the netlink socket receive buffer sizes */
+//设置接收buffer的大小
 static int
 netlink_set_rx_buf_size(nl_handle_t *nl, unsigned rcvbuf_size, bool force)
 {
@@ -525,6 +526,7 @@ set_extra_netlink_monitoring(bool ipv4_routes, bool ipv6_routes, bool ipv4_rules
 #endif
 
 /* Create a socket to netlink interface_t */
+//创建netlink消息fd,并请求加入多个group，并设置收buffer大小
 static int
 netlink_socket(nl_handle_t *nl, unsigned rcvbuf_size, bool force, int flags, int group, ...)
 {
@@ -540,6 +542,7 @@ netlink_socket(nl_handle_t *nl, unsigned rcvbuf_size, bool force, int flags, int
 	sock_flags &= ~SOCK_NONBLOCK;
 #endif
 
+	//创建netlink　fd
 	nl->fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC | sock_flags, NETLINK_ROUTE);
 	if (nl->fd < 0) {
 		log_message(LOG_INFO, "Netlink: Cannot open netlink socket : (%s)",
@@ -566,6 +569,7 @@ netlink_socket(nl_handle_t *nl, unsigned rcvbuf_size, bool force, int flags, int
 	}
 
 	/* Join the requested groups */
+	//加入请求的group(group = 0时添加结束，group<0时参数错误）
 	va_start(gp, group);
 	while (group != 0) {
 		if (group < 0) {
@@ -643,6 +647,7 @@ netlink_socket(nl_handle_t *nl, unsigned rcvbuf_size, bool force, int flags, int
 	if (nl->fd < 0)
 		return -1;
 
+	//设置接收buffer的大小
 	return netlink_set_rx_buf_size(nl, rcvbuf_size, force);
 }
 
@@ -860,6 +865,7 @@ parse_rtattr_nested(struct rtattr **tb, int max, struct rtattr *rta)
 	parse_rtattr(tb, max, RTA_DATA(rta), RTA_PAYLOAD(rta));
 }
 
+//置vrrp为备状态
 static void
 set_vrrp_backup(vrrp_t *vrrp)
 {
@@ -922,6 +928,7 @@ netlink_if_address_filter(__attribute__((unused)) struct sockaddr_nl *snl, struc
 	bool is_tracking_saddr;
 #endif
 
+	//仅处理地址新增或者删除
 	if (h->nlmsg_type != RTM_NEWADDR && h->nlmsg_type != RTM_DELADDR)
 		return 0;
 
@@ -1449,6 +1456,7 @@ netlink_request(nl_handle_t *nl,
 	req.i.ifi_family = family;
 
 #ifdef _WITH_VRRP_
+	//如果指定name则获取对应的接口信息
 	if (name)
 		addattr_l(&req.nlh, sizeof req, IFLA_IFNAME, name, strlen(name) + 1);
 	else
@@ -1790,6 +1798,7 @@ netlink_if_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct n
 		return -1;
 	name = (char *) RTA_DATA(tb[IFLA_IFNAME]);
 
+	//检查是否存在，如果不存在，则创建ifp
 	/* Skip it if already exists */
 	ifp = if_get_by_ifname(name, IF_CREATE_NETLINK);
 
@@ -1815,9 +1824,11 @@ netlink_interface_lookup(char *name)
 	name = NULL;
 #endif
 
+	//发送command获取kernel指定link信息
 	if (netlink_request(&nl_cmd, AF_PACKET, RTM_GETLINK, name) < 0)
 		return -1;
 
+	//读取并解析link信息(并通过netlink_if_link_filter创建相应接口）
 	return netlink_parse_info(netlink_if_link_filter, &nl_cmd, NULL, false);
 }
 #endif
@@ -1844,6 +1855,7 @@ netlink_address_lookup(void)
 
 #ifdef _WITH_VRRP_
 /* Netlink flag Link update */
+//对理link新增或者删除对vrrp的影响
 static int
 netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlmsghdr *h)
 {
@@ -1858,6 +1870,7 @@ netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 #endif
 	uint32_t old_mtu;
 
+	//仅处理newlink,dellink消息
 	if (!(h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK))
 		return 0;
 
@@ -1870,6 +1883,7 @@ netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
 	if (tb[IFLA_IFNAME] == NULL)
 		return -1;
+	//取出link接口名
 	name = (char *)RTA_DATA(tb[IFLA_IFNAME]);
 
 	/* Ignore NEWLINK messages with ifi_change == 0 and IFLA_WIRELESS set
@@ -1886,6 +1900,7 @@ netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 
 	if (ifp) {
 		if (h->nlmsg_type == RTM_DELLINK) {
+			//链路被删除
 			if (!LIST_ISEMPTY(ifp->tracking_vrrp) || __test_bit(LOG_DETAIL_BIT, &debug))
 				log_message(LOG_INFO, "Interface %s deleted", ifp->ifname);
 #ifndef _DEBUG_
@@ -1906,6 +1921,7 @@ netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 				thread_add_event(master, recreate_vmac_thread, ifp, 0);
 #endif
 		} else {
+			//新增链路
 			if (strcmp(ifp->ifname, name)) {
 				/* The name can change, so handle that here */
 				log_message(LOG_INFO, "Interface name has changed from %s to %s", ifp->ifname, name);
@@ -1916,6 +1932,7 @@ netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 					ifp->ifindex = 0;
 				} else
 #endif
+					//接口被改变，需要先删除接口再新增接口
 					cleanup_lost_interface(ifp);
 
 #ifdef _HAVE_VRRP_VMAC_
@@ -1996,6 +2013,7 @@ netlink_link_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 			if (__test_bit(LOG_DETAIL_BIT, &debug))
 				log_message(LOG_INFO, "Interface %s added", ifp->ifname);
 
+			//更新或者新增接口
 			update_added_interface(ifp);
 
 #ifndef _DEBUG_
@@ -2139,10 +2157,12 @@ netlink_rule_filter(__attribute__((unused)) struct sockaddr_nl *snl, struct nlms
 #endif
 
 /* Netlink kernel message reflection */
+//解析netlink的广播消息，针对这些消息使vrrp状态发生变化
 static int
 netlink_broadcast_filter(struct sockaddr_nl *snl, struct nlmsghdr *h)
 {
 	switch (h->nlmsg_type) {
+	//link添加，link删除
 	case RTM_NEWLINK:
 	case RTM_DELLINK:
 		/* It appears that older kernels (certainly 2.6.32) can
@@ -2157,6 +2177,7 @@ netlink_broadcast_filter(struct sockaddr_nl *snl, struct nlmsghdr *h)
 			return netlink_link_filter(snl, h);
 #endif
 		break;
+		//address添加，删除
 	case RTM_NEWADDR:
 	case RTM_DELADDR:
 		return netlink_if_address_filter(snl, h);
@@ -2164,9 +2185,11 @@ netlink_broadcast_filter(struct sockaddr_nl *snl, struct nlmsghdr *h)
 #ifdef _HAVE_FIB_ROUTING_
 	case RTM_NEWROUTE:
 	case RTM_DELROUTE:
+		//路由添加，删除
 		return netlink_route_filter(snl, h);
 	case RTM_NEWRULE:
 	case RTM_DELRULE:
+		//策略路由规则添加，删除
 		return netlink_rule_filter(snl, h);
 #endif
 	default:
@@ -2178,6 +2201,7 @@ netlink_broadcast_filter(struct sockaddr_nl *snl, struct nlmsghdr *h)
 	return 0;
 }
 
+//处理关注的netlink广播消息
 static int
 kernel_netlink(thread_t * thread)
 {
@@ -2285,6 +2309,7 @@ kernel_netlink_init(void)
 #endif
 
 	if (nl_kernel.fd > 0) {
+		//注册netlink广播消息处理
 		log_message(LOG_INFO, "Registering Kernel netlink reflector");
 		nl_kernel.thread = thread_add_read(master, kernel_netlink, &nl_kernel, nl_kernel.fd,
 						   TIMER_NEVER);
@@ -2292,6 +2317,7 @@ kernel_netlink_init(void)
 		log_message(LOG_INFO, "Error while registering Kernel netlink reflector channel");
 
 	/* Prepare netlink command channel. The cmd socket is used synchronously.*/
+	//创建netlink命令fd
 #ifdef _DEBUG_
 #ifdef _WITH_VRRP_
 	netlink_socket(&nl_cmd, global_data->vrrp_netlink_cmd_rcv_bufs, global_data->vrrp_netlink_cmd_rcv_bufs_force, 0, 0);
@@ -2318,9 +2344,11 @@ kernel_netlink_init(void)
 #ifndef _DEBUG_
 	if (prog_type == PROG_TYPE_VRRP)
 #endif
+		//获取系统link信息
 		init_interface_queue();
 #endif
 
+	//获取系统address信息
 	netlink_address_lookup();
 
 #if !defined _DEBUG_ && defined _WITH_LVS_

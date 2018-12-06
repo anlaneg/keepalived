@@ -3424,6 +3424,7 @@ vrrp_complete_init(void)
 #endif
 
 	/* We need to know the state of interfaces for the next loop */
+	//监听接口的状态变换
 	init_interface_linkbeat();
 
 	/* Initialise any tracking files */

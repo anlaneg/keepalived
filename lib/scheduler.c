@@ -1320,6 +1320,7 @@ thread_add_event(thread_master_t * m, int (*func) (thread_t *), void *arg, int v
 }
 
 /* Add terminate event thread. */
+//添加紧急的terminate事件
 static thread_t *
 thread_add_generic_terminate_event(thread_master_t * m, thread_type_t type, int (*func)(thread_t *))
 {
@@ -1403,6 +1404,7 @@ thread_cancel(thread_t *thread)
 		rb_erase_cached(&thread->n, &m->timer);
 		break;
 	case THREAD_CHILD:
+		//取消子进程termination事件
 		/* Does this need to kill the child, or is that the
 		 * caller's job?
 		 * This function is currently unused, so leave it for now.
@@ -1803,6 +1805,7 @@ process_threads(thread_master_t *m)
 	}
 }
 
+//处理进程终止
 static void
 process_child_termination(pid_t pid, int status)
 {
@@ -1841,6 +1844,7 @@ process_child_termination(pid_t pid, int status)
 		thread_add_terminate_event(m);
 	}
 	else
+		//触发进程中止事件
 		thread_move_ready(m, &m->child, thread, THREAD_CHILD_TERMINATED);
 }
 

@@ -105,11 +105,13 @@ if_get_by_ifname(const char *ifname, if_lookup_t create)
 	interface_t *ifp;
 	element e;
 
+	//如果if_queue中存在，则直接返回
 	LIST_FOREACH(if_queue, ifp, e) {
 		if (!strcmp(ifp->ifname, ifname))
 			return ifp;
 	}
 
+	//如果不容许创建此接口，则报错
 	if (create == IF_NO_CREATE ||
 	    (create == IF_CREATE_IF_DYNAMIC && (!global_data || !global_data->dynamic_interfaces))) {
 		if (create == IF_CREATE_IF_DYNAMIC)
@@ -117,9 +119,11 @@ if_get_by_ifname(const char *ifname, if_lookup_t create)
 		return NULL;
 	}
 
+	//否则创建此接口
 	if (!(ifp = MALLOC(sizeof(interface_t))))
 		return NULL;
 
+	//设置接口名称，并将其加入到if_queue
 	strcpy(ifp->ifname, ifname);
 #ifdef _HAVE_VRRP_VMAC_
 	ifp->base_ifp = ifp;
@@ -627,6 +631,7 @@ if_linkbeat_refresh_thread(thread_t * thread)
 	return 0;
 }
 
+//监听所有接口的状态变化
 void
 init_interface_linkbeat(void)
 {
@@ -673,6 +678,7 @@ init_interface_linkbeat(void)
 		ifp->ifi_flags = if_up ? IFF_UP | IFF_RUNNING : 0;
 
 		/* Register new monitor thread */
+		//注册timer,监视接口状态的up/down变换
 		thread_add_timer(master, if_linkbeat_refresh_thread, ifp, POLLING_DELAY);
 	}
 
@@ -694,6 +700,7 @@ free_old_interface_queue(void)
 	free_list(&old_garp_delay);
 }
 
+//初始化系统所有link,将其组织到if_queue中
 void
 init_interface_queue(void)
 {
@@ -1098,6 +1105,7 @@ interface_down(interface_t *ifp)
 #endif
 }
 
+//kernel中已不存在接口ifp,此接口将被删除
 void
 cleanup_lost_interface(interface_t *ifp)
 {

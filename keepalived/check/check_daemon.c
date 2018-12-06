@@ -428,10 +428,10 @@ check_respawn_thread(thread_t * thread)
 
 	if (!__test_bit(DONT_RESPAWN_BIT, &debug)) {
 		log_message(LOG_ALERT, "Healthcheck child process(%d) died: Respawning", thread->u.c.pid);
-		start_check_child();
+		start_check_child();//实现子进程重启
 	} else {
 		log_message(LOG_ALERT, "Healthcheck child process(%d) died: Exiting", thread->u.c.pid);
-		raise(SIGTERM);
+		raise(SIGTERM);//子进程挂掉，触发自身terminal信号
 	}
 	return 0;
 }
@@ -496,12 +496,13 @@ start_check_child(void)
 			       , strerror(errno));
 		return -1;
 	} else if (pid) {
-		//父进程退出
+		//父进程启动
 		checkers_child = pid;
 		log_message(LOG_INFO, "Starting Healthcheck child process, pid=%d"
 			       , pid);
 
 		/* Start respawning thread */
+		//关注子进程的退出事件
 		thread_add_child(master, check_respawn_thread, NULL,
 				 pid, TIMER_NEVER);
 
