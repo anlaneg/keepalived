@@ -64,10 +64,10 @@
 /* HTTP/HTTPS request structure */
 typedef struct {
 	struct		addrinfo *dst;
-	char		ipaddress[INET6_ADDRSTRLEN];
-	uint16_t	addr_port;
-	char		*url;
-	char		*vhost;
+	char		ipaddress[INET6_ADDRSTRLEN];//需要发起请求的主机ip地址
+	uint16_t	addr_port;//需要发起请求的主机端口
+	char		*url;//需要发起get请求的url
+	char		*vhost;//需要发起http服务器虚host地址
 	int		verbose;
 	int		ssl;
 #ifdef _HAVE_SSL_SET_TLSEXT_HOST_NAME_

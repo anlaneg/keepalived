@@ -115,6 +115,7 @@ epilog(thread_t * thread)
 }
 
 /* Simple finalization function */
+//所有的内容都被读取完了
 int
 finalize(thread_t * thread)
 {
@@ -133,8 +134,9 @@ finalize(thread_t * thread)
 
 		printf(HTML_HASH_FINAL);
 	}
+	//显示读取的内容的摘要信息
 	printf("%s = ", HASH_LABEL(sock_obj));
-	for (i = 0; i < digest_length; i++)
+		for (i = 0; i < digest_length; i++)
 		printf("%02x", digest[i]);
 	if (sock_obj->content_len != -1 && sock_obj->content_len != sock_obj->rx_bytes)
 		printf ("\nWARNING - Content-Length (%ld) does not match received bytes (%ld).", sock_obj->content_len, sock_obj->rx_bytes);
@@ -184,6 +186,7 @@ find_content_len(char *buffer, size_t size)
 }
 
 /* Process incoming stream */
+//dump读取到的内容
 int
 http_process_stream(SOCK * sock_obj, int r)
 {
@@ -243,6 +246,7 @@ http_read_thread(thread_t * thread)
 	ssize_t r = 0;
 
 	/* Handle read timeout */
+	//读取超时
 	if (thread->type == THREAD_READ_TIMEOUT) {
 		exit_code = 1;
 		return epilog(thread);
@@ -256,6 +260,7 @@ http_read_thread(thread_t * thread)
 		r = MAX_BUFFER_LENGTH;
 	}
 	memset(sock_obj->buffer + sock_obj->size, 0, (size_t)r);
+	//读取请求
 	r = read(thread->u.fd, sock_obj->buffer + sock_obj->size, (size_t)r);
 
 	DBG(" [l:%zd,fd:%d]\n", r, sock_obj->fd);
@@ -273,6 +278,7 @@ http_read_thread(thread_t * thread)
 		/* All the HTTP stream has been parsed */
 		finalize(thread);
 	} else {
+		//读取web服务器响应成功，处理读取到的内容
 		/* Handle the response stream */
 		http_process_stream(sock_obj, (int)r);
 
@@ -280,6 +286,7 @@ http_read_thread(thread_t * thread)
 		 * Register next http stream reader.
 		 * Register itself to not perturbe global I/O multiplexer.
 		 */
+		//注册下一次读取
 		thread_add_read(thread->master, http_read_thread, sock_obj,
 				thread->u.fd, HTTP_CNX_TIMEOUT);
 	}
@@ -312,6 +319,7 @@ http_response_thread(thread_t * thread)
 	sock_obj->rx_bytes = 0;
 
 	/* Register asynchronous http/ssl read thread */
+	//生成read事件，触发读取
 	if (req->ssl)
 		thread_add_read(thread->master, ssl_read_thread, sock_obj,
 				thread->u.fd, HTTP_CNX_TIMEOUT);
@@ -322,6 +330,7 @@ http_response_thread(thread_t * thread)
 }
 
 /* remote Web server is connected, send it the get url query.  */
+//发起一个http请求
 int
 http_request_thread(thread_t * thread)
 {
@@ -355,6 +364,7 @@ http_request_thread(thread_t * thread)
 		 ntohs(req->addr_port));
 	}
 
+	//构造HTTP请求头
 	snprintf(str_request, GET_BUFFER_LENGTH,
 		 (req->dst && req->dst->ai_family == AF_INET6 && !req->vhost) ? REQUEST_TEMPLATE_IPV6 : REQUEST_TEMPLATE,
 		  req->url, request_host, request_host_port);
@@ -362,6 +372,7 @@ http_request_thread(thread_t * thread)
 	FREE(request_host_port);
 
 	/* Send the GET request to remote Web server */
+	//向web服务器发送GET请求
 	DBG("Sending GET request [%s] on fd:%d\n", req->url, sock_obj->fd);
 	if (req->ssl)
 		ret = ssl_send_request(sock_obj->ssl, str_request, (int)strlen(str_request));
@@ -371,6 +382,7 @@ http_request_thread(thread_t * thread)
 	FREE(str_request);
 
 	if (!ret) {
+		//发送请求失败
 		fprintf(stderr, "Cannot send get request to [%s]:%d.\n",
 			req->ipaddress,
 			ntohs(req->addr_port));
@@ -379,6 +391,7 @@ http_request_thread(thread_t * thread)
 	}
 
 	/* Register read timeouted thread */
+	//注册web服务器的读取事件，容许读取超时
 	thread_add_read(thread->master, http_response_thread, sock_obj,
 			sock_obj->fd, HTTP_CNX_TIMEOUT);
 	return 1;

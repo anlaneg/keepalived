@@ -63,5 +63,6 @@ init_sock(void)
 {
 	sock = (SOCK *) MALLOC(sizeof (SOCK));
 	memset(sock, 0, sizeof (SOCK));
+	//添加针对此sock的connect事件
 	thread_add_event(master, tcp_connect_thread, sock, 0);
 }

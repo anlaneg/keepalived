@@ -75,11 +75,13 @@ tcp_connect(int fd, REQ * req_obj)
 		inet_pton(AF_INET, req_obj->ipaddress, &adr_serv.sin_addr);
 
 		/* Call connect function. */
+		//向对端发起连接
 		ret = connect(fd, (struct sockaddr *) &adr_serv, long_inet);
 	}
 
 	/* Immediate success */
 	if (ret == 0) {
+		//连接成功
 		fcntl(fd, F_SETFL, val);
 		return connect_success;
 	}
@@ -151,18 +153,19 @@ tcp_connection_state(int fd, enum connect_result status, thread_t * thread,
 	switch (status) {
 	case connect_error:
 		close(fd);
-		thread_add_terminate_event(thread->master);//中止此线程
+		//连接失败，中止此事件
+		thread_add_terminate_event(thread->master);
 		break;
 
 	case connect_success:
-		//连接成功，创建写线程
+		//连接成功，创建写事件，并注册可写时，调用func
 		thread_add_write(thread->master, func, THREAD_ARG(thread),
 				 fd, timeout);
 		break;
 
 		/* Checking non-blocking connect, we wait until socket is writable */
 	case connect_in_progress:
-		//连接中，创建写线程
+		//连接中，创建写事件，并注册可写时，调用func
 		thread_add_write(thread->master, func, THREAD_ARG(thread),
 				 fd, timeout);
 		break;
@@ -181,6 +184,7 @@ tcp_check_thread(thread_t * thread)
 	sock_obj->status = tcp_socket_state(thread, tcp_check_thread);
 	switch (sock_obj->status) {
 	case connect_error:
+		//连接失败
 		DBG("Error connecting server [%s]:%d.\n",
 		    req->ipaddress, ntohs(req->addr_port));
 		thread_add_terminate_event(thread->master);
@@ -188,17 +192,21 @@ tcp_check_thread(thread_t * thread)
 		break;
 
 	case connect_timeout:
+		//连接超时
 		DBG("Timeout connecting server [%s]:%d.\n",
 		    req->ipaddress, ntohs(req->addr_port));
 		thread_add_terminate_event(thread->master);
 		return -1;
 		break;
 
+		//连接成功
 	case connect_success:{
 			if (req->ssl)
+				//如果是ssl请求，则进一步进行ssl连接
 				ret = ssl_connect(thread);
 
 			if (ret) {
+				//如果连接成功，则注册http请求事件，并调用http_request_thread
 				/* Remote WEB server is connected.
 				 * Unlock eventual locked socket.
 				 */
@@ -207,6 +215,7 @@ tcp_check_thread(thread_t * thread)
 						 http_request_thread, sock_obj, 0);
 				thread_del_write(thread);
 			} else {
+				//连接失败，报错
 				DBG("Connection trouble to: [%s]:%d.\n",
 				    req->ipaddress,
 				    ntohs(req->addr_port));
@@ -228,6 +237,7 @@ tcp_connect_thread(thread_t * thread)
 {
 	SOCK *sock_obj = THREAD_ARG(thread);
 
+	//创建一个socket(ipv4,或ipv6)
 	if ((sock_obj->fd = socket((req->dst && req->dst->ai_family == AF_INET6) ? AF_INET6 : AF_INET,
 				   SOCK_STREAM
 #ifdef SOCK_CLOEXEC
