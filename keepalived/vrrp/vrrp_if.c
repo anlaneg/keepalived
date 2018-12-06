@@ -1220,11 +1220,13 @@ setup_interface(vrrp_t *vrrp)
 			}
 		}
 
+		//打开读取vrrp报文的socket
 		vrrp->sockets->fd_in = open_vrrp_read_socket(vrrp->sockets->family, vrrp->sockets->proto,
 							ifp, vrrp->sockets->unicast, vrrp->sockets->rx_buf_size);
 		if (vrrp->sockets->fd_in == -1)
 			vrrp->sockets->fd_out = -1;
 		else
+			//打开vrrp报文发送对应的socket
 			vrrp->sockets->fd_out = open_vrrp_send_socket(vrrp->sockets->family, vrrp->sockets->proto,
 							ifp, vrrp->sockets->unicast);
 

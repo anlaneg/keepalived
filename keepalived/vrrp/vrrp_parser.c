@@ -434,8 +434,10 @@ vrrp_native_ipv6_handler(__attribute__((unused)) vector_t *strvec)
 	}
 
 	vrrp->family = AF_INET6;
-	vrrp->version = VRRP_VERSION_3;
+	vrrp->version = VRRP_VERSION_3;//默认ipv6使用vrrp3号版本
 }
+
+//按配置指定vrrp的状态
 static void
 vrrp_state_handler(vector_t *strvec)
 {
@@ -456,21 +458,26 @@ vrrp_state_handler(vector_t *strvec)
 		vrrp->wantstate = VRRP_STATE_BACK;
 	}
 }
+
+//解析vrrp对应的接口
 static void
 vrrp_int_handler(vector_t *strvec)
 {
 	vrrp_t *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
-	char *name = strvec_slot(strvec, 1);
+	char *name = strvec_slot(strvec, 1);//取接口名
 
+	//接口名称过长，配置有误
 	if (strlen(name) >= IFNAMSIZ) {
 		report_config_error(CONFIG_GENERAL_ERROR, "Interface name '%s' too long - ignoring", name);
 		return;
 	}
 
+	//取vrrp对应的接口
 	vrrp->ifp = if_get_by_ifname(name, IF_CREATE_IF_DYNAMIC);
 	if (!vrrp->ifp)
 		report_config_error(CONFIG_GENERAL_ERROR, "WARNING - interface %s for vrrp_instance %s doesn't exist", name, vrrp->iname);
 	else if (vrrp->ifp->hw_type == ARPHRD_LOOPBACK) {
+		//给定的接口不能为loopback口
 		report_config_error(CONFIG_GENERAL_ERROR, "(%s) cannot use a loopback interface (%s) for vrrp - ignoring", vrrp->iname, vrrp->ifp->ifname);
 		vrrp->ifp = NULL;
 	}
@@ -1225,6 +1232,8 @@ vrrp_vscript_init_fail_handler(__attribute__((unused)) vector_t *strvec)
 	vrrp_script_t *vscript = LIST_TAIL_DATA(vrrp_data->vrrp_script);
 	vscript->init_state = SCRIPT_INIT_STATE_FAILED;
 }
+
+//设置vrrp版本
 static void
 vrrp_version_handler(vector_t *strvec)
 {
@@ -1452,9 +1461,9 @@ init_vrrp_keywords(bool active)
 #ifdef _WITH_UNICAST_CHKSUM_COMPAT_
 	install_keyword("old_unicast_checksum", &vrrp_unicast_chksum_handler);
 #endif
-	install_keyword("native_ipv6", &vrrp_native_ipv6_handler);
+	install_keyword("native_ipv6", &vrrp_native_ipv6_handler);//指定采用ipv6方式发送vrrp协议
 	install_keyword("state", &vrrp_state_handler);
-	install_keyword("interface", &vrrp_int_handler);
+	install_keyword("interface", &vrrp_int_handler);//vrrp对应的接口
 	install_keyword("dont_track_primary", &vrrp_dont_track_handler);
 	install_keyword("track_interface", &vrrp_track_if_handler);
 	install_keyword("track_script", &vrrp_track_scr_handler);
@@ -1466,7 +1475,7 @@ init_vrrp_keywords(bool active)
 	install_keyword("unicast_src_ip", &vrrp_srcip_handler);
 	install_keyword("track_src_ip", &vrrp_track_srcip_handler);
 	install_keyword("virtual_router_id", &vrrp_vrid_handler);
-	install_keyword("version", &vrrp_version_handler);
+	install_keyword("version", &vrrp_version_handler);//设置vrrp协议版本
 	install_keyword("priority", &vrrp_prio_handler);
 	install_keyword("advert_int", &vrrp_adv_handler);
 	install_keyword("virtual_ipaddress", &vrrp_vip_handler);

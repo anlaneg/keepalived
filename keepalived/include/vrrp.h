@@ -53,7 +53,7 @@ typedef struct _vrrphdr {			/* rfc2338.5.1 */
 	uint8_t			vers_type;	/* 0-3=type, 4-7=version */
 	uint8_t			vrid;		/* virtual router id */ //虚路由id号
 	uint8_t			priority;	/* router priority */
-	uint8_t			naddr;		/* address counter */
+	uint8_t			naddr;		/* address counter */ //vrrp报文中包含的虚拟ip个数
 	union {
 		struct {
 			uint8_t	auth_type;	/* authentification type */
@@ -180,7 +180,7 @@ typedef enum chksum_compatibility {
 
 /* parameters per virtual router -- rfc2338.6.1.2 */
 typedef struct _vrrp_t {
-	sa_family_t		family;			/* AF_INET|AF_INET6 */
+	sa_family_t		family;			/* AF_INET|AF_INET6 */ //使用哪种ip协议
 	char			*iname;			/* Instance Name */ //vrrp实例名称
 	vrrp_sgroup_t		*sync;			/* Sync group we belong to */
 	vrrp_stats		*stats;			/* Statistics */
@@ -230,10 +230,11 @@ typedef struct _vrrp_t {
 	unsigned		higher_prio_send_advert; /* Send advert after higher prio advert received */
 	uint8_t			vrid;			/* virtual id. from 1(!) to 255 */
 	uint8_t			base_priority;		/* configured priority value */
-	uint8_t			effective_priority;	/* effective priority value */
+	uint8_t			effective_priority;	/* effective priority value */ //生效的路由优先级
 	int			total_priority;		/* base_priority +/- track_script, track_interface and track_file weights.
 							   effective_priority is this within the range [1,254]. */
 	bool			vipset;			/* All the vips are set ? */
+	//需要通告的虚ip
 	list			vip;			/* list of virtual ip addresses */
 	list			evip;			/* list of protocol excluded VIPs.
 							 * Those VIPs will not be presents into the
@@ -243,6 +244,7 @@ typedef struct _vrrp_t {
 	bool			evip_add_ipv6;		/* Enable IPv6 for eVIPs if this is an IPv4 instance */
 	list			vroutes;		/* list of virtual routes */
 	list			vrules;			/* list of virtual rules */
+	//配置的报文通告间隔
 	unsigned		adver_int;		/* locally configured delay between advertisements*/
 	unsigned		master_adver_int;	/* In v3, when we become BACKUP, we use the MASTER's
 							 * adver_int. If we become MASTER again, we use the
@@ -262,17 +264,18 @@ typedef struct _vrrp_t {
 							 * prio is allowed.  0 means no delay.
 							 */
 	timeval_t		preempt_time;		/* Time after which preemption can happen */
+	//记录vrrp状态
 	int			state;			/* internal state (init/backup/master/fault) */
 #ifdef _WITH_SNMP_VRRP_
 	int			configured_state;	/* the configured state of the instance */
 #endif
-	int			wantstate;		/* user explicitly wants a state (back/mast) */
+	int			wantstate;		/* user explicitly wants a state (back/mast) */ //用户配置的期待主备情况
 	bool			reload_master;		/* set if the instance is a master being reloaded */
 	sock_t			*sockets;		/* In and out socket descriptors */
 
 	int			debug;			/* Debug level 0-4 */
 
-	int			version;		/* VRRP version (2 or 3) */
+	int			version;		/* VRRP version (2 or 3) */ //vrrp协议版本
 
 	/* State transition notification */
 	bool			smtp_alert;//是否开启了smtp通知
@@ -296,7 +299,9 @@ typedef struct _vrrp_t {
 
 #if defined _WITH_VRRP_AUTH_
 	/* Authentication data (only valid for VRRPv2) */
+	//版本的授权类型
 	uint8_t			auth_type;		/* authentification type. VRRP_AUTH_* */
+	//认证数据
 	uint8_t			auth_data[8];		/* authentification data */
 
 	/* IPSEC AH counter def (only valid for VRRPv2) --rfc2402.3.3.2 */

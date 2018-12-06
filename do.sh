@@ -27,7 +27,7 @@
 #  change this value to your own by passing it the --prefix value.
 #
 #  eg: './configure --prefix=/usr/'
-
+sudo apt -y install libnftnl-dev libmnl-dev libnl-3-dev libnl-genl-3-dev
 ./build_setup
 ./configure
 make

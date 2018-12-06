@@ -384,6 +384,7 @@ vrrp_register_workers(list l)
 	LIST_FOREACH(l, sock, e) {
 		/* Register a timer thread if interface exists */
 		if (sock->fd_in != -1)
+			//注册vrrp报文的读取时间，自sock->fd_in中读取vrrp报文
 			sock->thread = thread_add_read_sands(master, vrrp_read_dispatcher_thread,
 						       sock, sock->fd_in, vrrp_compute_timer(sock));
 	}
@@ -776,6 +777,7 @@ vrrp_dispatcher_read_timeout(sock_t *sock)
 }
 
 /* Handle dispatcher read packet */
+//自sock中读取vrrp报文
 static int
 vrrp_dispatcher_read(sock_t * sock)
 {
@@ -795,7 +797,7 @@ vrrp_dispatcher_read(sock_t * sock)
 	//自sock->fd_in中读取vrrp报文
 	len = recvfrom(sock->fd_in, vrrp_buffer, vrrp_buffer_len, 0,
 		       (struct sockaddr *) &src_addr, &src_addr_len);
-	//偏多到vrrp报文头部
+	//偏移到vrrp报文头部
 	hd = vrrp_get_header(sock->family, vrrp_buffer, &proto);
 
 	//通过vrid,fd查找vrrp结构
@@ -807,6 +809,7 @@ vrrp_dispatcher_read(sock_t * sock)
 		//收到了一个我们不存在的vrrp id,忽略此通告
 		return sock->fd_in;
 
+	//失效状态，初始化状态不接受通告消息
 	if (vrrp->state == VRRP_STATE_FAULT ||
 	    vrrp->state == VRRP_STATE_INIT) {
 		/* We just ignore a message received when we are in fault state or
@@ -818,9 +821,11 @@ vrrp_dispatcher_read(sock_t * sock)
 
 	prev_state = vrrp->state;
 
+	//当前属于back状态，则调用back状态收到报文
 	if (vrrp->state == VRRP_STATE_BACK)
 		vrrp_state_backup(vrrp, vrrp_buffer, len);
 	else if (vrrp->state == VRRP_STATE_MAST) {
+		//当前属于master状态，则调用master状态收到报文
 		if (vrrp_state_master_rx(vrrp, vrrp_buffer, len))
 			vrrp_state_leave_master(vrrp, false);
 	} else
@@ -842,6 +847,7 @@ vrrp_dispatcher_read(sock_t * sock)
 }
 
 /* Our read packet dispatcher */
+//自sock->fd_in中读取开启vrrp的接口收到的vrrp报文
 static int
 vrrp_read_dispatcher_thread(thread_t * thread)
 {
@@ -853,12 +859,15 @@ vrrp_read_dispatcher_thread(thread_t * thread)
 
 	/* Dispatcher state handler */
 	if (thread->type == THREAD_READ_TIMEOUT || sock->fd_in == -1)
+		//自fd接口读取报文超时，或者fd_in口被关闭
 		fd = vrrp_dispatcher_read_timeout(sock);
 	else
+		//自sock中读取vrrp报文
 		fd = vrrp_dispatcher_read(sock);
 
 	/* register next dispatcher thread */
 	if (fd != -1)
+		//注册下一次的读事件
 		sock->thread = thread_add_read_sands(thread->master, vrrp_read_dispatcher_thread,
 					       sock, fd, vrrp_compute_timer(sock));
 	return 0;

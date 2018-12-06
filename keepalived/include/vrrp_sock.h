@@ -46,6 +46,7 @@ typedef struct _sock {
 	int			fd_out;
 	int			rx_buf_size;
 	thread_t		*thread;
+	//注册在同一个sock上的不同vrouter_id均挂接在此树上，通过vid,查找对应的vrrp(vrouter)
 	rb_root_t		rb_vrid;
 	rb_root_cached_t	rb_sands;
 } sock_t;

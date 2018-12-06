@@ -1032,15 +1032,18 @@ vrrp_in_chk(vrrp_t * vrrp, char *buffer, ssize_t buflen_ret, bool check_vip_addr
 }
 
 /* build IP header */
+//构造vrrp报文的ipv4头
 static void
 vrrp_build_ip4(vrrp_t *vrrp, char *buffer)
 {
 	struct iphdr *ip = (struct iphdr *) (buffer);
 
+	//构造ip头部
 	ip->ihl = sizeof(struct iphdr) >> 2;
 	ip->version = 4;
 	/* set tos to internet network control */
 	ip->tos = 0xc0;
+	//ip的total_len就是ip报文头部＋vrrp报文头部长度
 	ip->tot_len = (uint16_t)(sizeof (struct iphdr) + vrrp_pkt_len(vrrp));
 	ip->tot_len = htons(ip->tot_len);
 	ip->id = 0;
@@ -1048,20 +1051,24 @@ vrrp_build_ip4(vrrp_t *vrrp, char *buffer)
 	ip->ttl = VRRP_IP_TTL;
 
 	/* fill protocol type --rfc2402.2 */
+	//设置vrrp协议号
 #ifdef _WITH_VRRP_AUTH_
 	ip->protocol = (vrrp->auth_type == VRRP_AUTH_AH) ? IPPROTO_AH : IPPROTO_VRRP;
 #else
 	ip->protocol = IPPROTO_VRRP;
 #endif
 
+	//如果vrrp设置saddr了，则使用，否则使用vrrp接口上的源ip
 	ip->saddr = VRRP_PKT_SADDR(vrrp);
 
 	/* If using unicast peers, pick the first one */
 	if (!LIST_ISEMPTY(vrrp->unicast_peer)) {
+		//如果采用单播对端，选链表头的地址
 		struct sockaddr_storage* addr = ELEMENT_DATA(LIST_HEAD(vrrp->unicast_peer));
 		ip->daddr = inet_sockaddrip4(addr);
 	}
 	else
+		//否则使用组播地址
 		ip->daddr = global_data->vrrp_mcast_group4.sin_addr.s_addr;
 
 	ip->check = 0;
@@ -1110,6 +1117,7 @@ vrrp_build_ipsecah(vrrp_t * vrrp, char *buffer, size_t buflen)
 #endif
 
 /* build VRRPv2 header */
+//构造vrrp v2版本报文
 static void
 vrrp_build_vrrp_v2(vrrp_t *vrrp, char *buffer)
 {
@@ -1121,18 +1129,23 @@ vrrp_build_vrrp_v2(vrrp_t *vrrp, char *buffer)
 	ip_address_t *ip_addr;
 
 	/* Family independant */
+	//指明为通告报文，版本为2
 	hd->vers_type = (VRRP_VERSION_2 << 4) | VRRP_PKT_ADVERT;
 	hd->vrid = vrrp->vrid;
 	hd->priority = vrrp->effective_priority;
+	//设置vip数目
 	hd->naddr = (uint8_t)((!LIST_ISEMPTY(vrrp->vip)) ? (uint8_t)LIST_SIZE(vrrp->vip) : 0);
 #ifdef _WITH_VRRP_AUTH_
 	hd->v2.auth_type = vrrp->auth_type;
 #else
+	//否则定义为无认证
 	hd->v2.auth_type = VRRP_AUTH_NONE;
 #endif
+	//指出报文通告间隔
 	hd->v2.adver_int = (uint8_t)(vrrp->adver_int / TIMER_HZ);
 
 	/* Family specific */
+	//存入通告的vip地址
 	if (vrrp->family == AF_INET) {
 		/* copy the ip addresses */
 		iparr = (struct in_addr *) ((char *) hd + sizeof (*hd));
@@ -1144,18 +1157,21 @@ vrrp_build_vrrp_v2(vrrp_t *vrrp, char *buffer)
 		}
 
 #ifdef _WITH_VRRP_AUTH_
+		//如果认证方式是password,则将
 		/* copy the passwd if the authentication is VRRP_AH_PASS */
 		if (vrrp->auth_type == VRRP_AUTH_PASS) {
 			unsigned vip_count = (!LIST_ISEMPTY(vrrp->vip)) ? LIST_SIZE(vrrp->vip) : 0;
-			char *pw = (char *) hd + sizeof (*hd) + vip_count * 4;
-			memcpy(pw, vrrp->auth_data, sizeof (vrrp->auth_data));
+			char *pw = (char *) hd + sizeof (*hd) + vip_count * 4;//跳到password位置
+			memcpy(pw, vrrp->auth_data, sizeof (vrrp->auth_data));//将password 写进入
 		}
 #endif
 
 		/* finally compute vrrp checksum */
+		//最后计算checksum
 		hd->chksum = 0;
 		hd->chksum = in_csum((uint16_t *)hd, vrrp_pkt_len(vrrp), 0, NULL);
 	} else if (vrrp->family == AF_INET6) {
+		//如果为ipv6,则存入ipv6的vip地址
 		ip6arr = (struct in6_addr *)((char *) hd + sizeof(*hd));
 		if (!LIST_ISEMPTY(vrrp->vip)) {
 			for (e = LIST_HEAD(vrrp->vip); e; ELEMENT_NEXT(e)) {
@@ -1221,6 +1237,7 @@ vrrp_build_vrrp_v3(vrrp_t *vrrp, char *buffer, struct iphdr *ip)
 }
 
 /* build VRRP header */
+//构造vrrp报文
 static void
 vrrp_build_vrrp(vrrp_t *vrrp, char *buffer, struct iphdr *ip_hdr)
 {
@@ -1231,6 +1248,7 @@ vrrp_build_vrrp(vrrp_t *vrrp, char *buffer, struct iphdr *ip_hdr)
 }
 
 /* build VRRP packet */
+//构造vrrp报文
 static void
 vrrp_build_pkt(vrrp_t * vrrp)
 {
@@ -1241,6 +1259,7 @@ vrrp_build_pkt(vrrp_t * vrrp)
 		bufptr = vrrp->send_buffer;
 
 		/* build the ip header */
+		//构造ipv4报文
 		vrrp_build_ip4(vrrp, vrrp->send_buffer);
 
 		/* build the vrrp header */
@@ -1250,6 +1269,7 @@ vrrp_build_pkt(vrrp_t * vrrp)
 		if (vrrp->auth_type == VRRP_AUTH_AH)
 			bufptr += vrrp_ipsecah_len();
 #endif
+		//构造vrrp报文
 		vrrp_build_vrrp(vrrp, bufptr, (struct iphdr *)vrrp->send_buffer);
 
 #ifdef _WITH_VRRP_AUTH_
@@ -1310,16 +1330,20 @@ vrrp_send_pkt(vrrp_t * vrrp, struct sockaddr_storage *addr)
 
 	/* Unicast sending path */
 	if (addr && addr->ss_family == AF_INET) {
+		//发送给ipv4对端
 		msg.msg_name = addr;
 		msg.msg_namelen = sizeof(struct sockaddr_in);
 	} else if (addr && addr->ss_family == AF_INET6) {
+		//发送给ipv6对端
 		msg.msg_name = addr;
 		msg.msg_namelen = sizeof(struct sockaddr_in6);
 		vrrp_build_ancillary_data(&msg, cbuf, src, vrrp);
 	} else if (vrrp->family == AF_INET) { /* Multicast sending path */
+		//发送给ipv4组播组
 		msg.msg_name = &global_data->vrrp_mcast_group4;
 		msg.msg_namelen = sizeof(struct sockaddr_in);
 	} else if (vrrp->family == AF_INET6) {
+		//发送给ipv6组播组
 		msg.msg_name = &global_data->vrrp_mcast_group6;
 		msg.msg_namelen = sizeof(struct sockaddr_in6);
 		vrrp_build_ancillary_data(&msg, cbuf, src, vrrp);
@@ -1339,6 +1363,7 @@ vrrp_alloc_send_buffer(vrrp_t * vrrp)
 }
 
 /* send VRRP advertisement */
+//发送vrrp通告信息
 void
 vrrp_send_adv(vrrp_t * vrrp, uint8_t prio)
 {
@@ -1351,6 +1376,7 @@ vrrp_send_adv(vrrp_t * vrrp, uint8_t prio)
 	if (LIST_ISEMPTY(vrrp->unicast_peer))
 		vrrp_send_pkt(vrrp, NULL);
 	else {
+		//采用单播发送，故需要遍历每个对端，并为每个单播发送一份幅本
 		LIST_FOREACH(vrrp->unicast_peer, addr, e) {
 			if (vrrp->family == AF_INET)
 				vrrp_update_pkt(vrrp, prio, addr);
@@ -1672,7 +1698,7 @@ vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 	bool ignore_advert = false;
 
 	/* Process the incoming packet */
-	//取vrrp头部
+	//取vrrp协议头部
 	hd = vrrp_get_header(vrrp->family, buf, &proto);
 	if (!vrrp->skip_check_adv_addr ||
 	    vrrp->master_saddr.ss_family != vrrp->pkt_saddr.ss_family)
@@ -2103,6 +2129,7 @@ chk_min_cfg(vrrp_t * vrrp)
 }
 
 /* open a VRRP sending socket */
+//打开vrrp发送socket
 int
 open_vrrp_send_socket(sa_family_t family, int proto, interface_t *ifp, bool unicast)
 {
@@ -2117,6 +2144,7 @@ open_vrrp_send_socket(sa_family_t family, int proto, interface_t *ifp, bool unic
 	}
 
 	/* Create and init socket descriptor */
+	//打开raw socket,指明协议proto
 	fd = socket(family, SOCK_RAW | SOCK_CLOEXEC, proto);
 	if (fd < 0) {
 		log_message(LOG_INFO, "cant open raw socket. errno=%d", errno);
@@ -2128,6 +2156,7 @@ open_vrrp_send_socket(sa_family_t family, int proto, interface_t *ifp, bool unic
 
 	/* We are not receiving on the send socket, there is no
 	 * point allocating any buffers to it */
+	//设置此fd的接收缓冲区长度为0
 	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &val, len))
 		log_message(LOG_INFO, "vrrp set send socket buffer size error %d", errno);
 
@@ -2209,6 +2238,7 @@ open_vrrp_read_socket(sa_family_t family, int proto, interface_t *ifp, bool unic
 	 * This is applicable for both unicast and multicast operation as well as
 	 * IPv4 and IPv6.
 	 */
+	//将fd绑定到接口，只收取指定接口的报文
 	if_setsockopt_bindtodevice(&fd, ifp);
 
 	if (fd < 0)
@@ -2460,6 +2490,7 @@ add_vrrp_to_track_bfd(vrrp_t *vrrp, tracked_bfd_t *tbfd)
 #endif
 
 /* complete vrrp structure */
+//从配置文件中读取到了vrrp的配置，有部分还没有配置，这里统一完善
 static bool
 vrrp_complete_instance(vrrp_t * vrrp)
 {
@@ -2506,6 +2537,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
 	else
 		have_ipv6_instance = true;
 
+	//如果未指定version,ipv6默认采用v3,ipv4默认采用global_data->vrrp_version
 	if (vrrp->version == 0) {
 		if (vrrp->family == AF_INET6)
 			vrrp->version = VRRP_VERSION_3;
@@ -3158,7 +3190,9 @@ vrrp_complete_instance(vrrp_t * vrrp)
 #endif
 
 	/* alloc send buffer */
+	//申请vrrp发送所需要的buffer
 	vrrp_alloc_send_buffer(vrrp);
+	//构造vrrp报文
 	vrrp_build_pkt(vrrp);
 
 	return true;
@@ -3325,6 +3359,7 @@ vrrp_complete_init(void)
 #endif
 
 	/* Make sure don't have same vrid on same interface with the same address family */
+	//遍历所有的vrrp
 	LIST_FOREACH(vrrp_data->vrrp, vrrp, e) {
 		/* If we don't know about the interface this is on, skip */
 		if (!IF_BASE_IFP(VRRP_CONFIGURED_IFP(vrrp))->ifindex)
