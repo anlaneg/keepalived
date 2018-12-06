@@ -818,6 +818,7 @@ vrrp_in_chk(vrrp_t * vrrp, char *buffer, ssize_t buflen_ret, bool check_vip_addr
 
 	/* verify packet type */
 	if ((hd->vers_type & 0x0f) != VRRP_PKT_ADVERT) {
+		//必须为通告报文
 		log_message(LOG_INFO, "(%s) Invalid packet type. %d and expect %d",
 			vrrp->iname, (hd->vers_type & 0x0f), VRRP_PKT_ADVERT);
 		++vrrp->stats->invalid_type_rcvd;
@@ -1702,17 +1703,20 @@ vrrp_state_backup(vrrp_t * vrrp, char *buf, ssize_t buflen)
 	hd = vrrp_get_header(vrrp->family, buf, &proto);
 	if (!vrrp->skip_check_adv_addr ||
 	    vrrp->master_saddr.ss_family != vrrp->pkt_saddr.ss_family)
-		check_addr = true;//master的地址与发送方的地址不一致，执行检查
+		//master的地址与发送方的地址族不一致，执行检查（可能master已失效）
+		check_addr = true;
 	else {
 		/* Check if the addresses are different */
 		if (vrrp->pkt_saddr.ss_family == AF_INET) {
 			if (((struct sockaddr_in*)&vrrp->pkt_saddr)->sin_addr.s_addr != ((struct sockaddr_in*)&vrrp->master_saddr)->sin_addr.s_addr)
+				//master的地址与发送方的地址不一致，执行检查(ipv4)
 				check_addr = true ;
 		} else {
 			if (!IN6_ARE_ADDR_EQUAL(&((struct sockaddr_in6*)&vrrp->pkt_saddr)->sin6_addr, &((struct sockaddr_in6*)&vrrp->master_saddr)->sin6_addr))
 				check_addr = true;
 		}
 	}
+
 	ret = vrrp_check_packet(vrrp, buf, buflen, check_addr);
 
 	if (ret != VRRP_PACKET_OK)
@@ -2694,6 +2698,7 @@ vrrp_complete_instance(vrrp_t * vrrp)
 		}
 	}
 
+	//将vrrp状态设置为init状态
 	vrrp->state = VRRP_STATE_INIT;
 #ifdef _WITH_SNMP_VRRP_
 	vrrp->configured_state = vrrp->wantstate;

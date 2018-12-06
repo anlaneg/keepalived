@@ -135,6 +135,7 @@ vrrp_sync_can_goto_master(vrrp_t * vrrp)
 	return true;
 }
 
+//由master转为backup时调用
 void
 vrrp_sync_backup(vrrp_t * vrrp)
 {
@@ -169,6 +170,9 @@ vrrp_sync_backup(vrrp_t * vrrp)
 	send_group_notifies(vgroup);
 }
 
+//由backup转为master状态时调用
+//由master转为master状态时调用
+//由faultL转为master状态时调用
 void
 vrrp_sync_master(vrrp_t * vrrp)
 {

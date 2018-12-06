@@ -27,6 +27,10 @@
 #  change this value to your own by passing it the --prefix value.
 #
 #  eg: './configure --prefix=/usr/'
+# keepalived实现了vrrp协议，vrrp协议只有一种格式的报文，即通告报文，可访问rfc2338
+# 获取vrrp报文的处理规范，非常简单
+# vrrp程序中应用了事件模型，通过此模型来驱动进程的通行。
+# 理解thread_t结构的实现可更快的理解本程序
 sudo apt -y install libnftnl-dev libmnl-dev libnl-3-dev libnl-genl-3-dev
 ./build_setup
 ./configure
